@@ -47,10 +47,10 @@ file.
 
 The "Source" tag for the spec file will be missing, but a new
 directory ".obs" will be present, with a "meta.xml" file that will use
-the "<scmsync>" tag to point to the master branch, as is done in the
+the `<scmsync>` tag to point to the master branch, as is done in the
 "git-example-2"[4] project from Adrian.
 
-The git URL for "<scmsync>" for user projects can point to external
+The git URL for `<scmsync>` for user projects can point to external
 git services, like "gitlab" or "github", but for openSUSE project
 should always point to the "code.opensuse.org" repository, to avoid
 history rewrite.
@@ -89,7 +89,7 @@ there will be an "Tumbleweed", "SLE-15-SP4", "ALP-16.0" for each
 project where the package lives.
 
 In each branch we will have maybe different source codes, different
-spec files and the "meta.xml" will have different "<scmsync>" URLs for
+spec files and the "meta.xml" will have different `<scmsync>` URLs for
 the different branches.
 
 
