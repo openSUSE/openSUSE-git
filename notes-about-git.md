@@ -39,7 +39,7 @@ From here, we have several choices that must be evaluated.  Some of
 them are enumerated here.
 
 
-## Single master branch
+### Single master branch
 
 The developer will put, in the same master / main branch all the
 elements required to build a package.  Mainly a traditional "spec"
@@ -78,7 +78,7 @@ The hashtag in the URL is used in some package manager to specify a
 branch name.
 
 
-## One branch per distribution
+### One branch per distribution
 
 As a linear extension of the previous layout, the developer can have
 multiple branches beside master / main, one per distribution.
@@ -93,7 +93,7 @@ spec files and the "meta.xml" will have different `<scmsync>` URLs for
 the different branches.
 
 
-## One branch for the code, multiple for distribution
+### One branch for the code, multiple for distribution
 
 Another alternative is to have one single branch (master / main) for
 the code, and with multiple tags to represent the different upstream
@@ -120,7 +120,7 @@ I am using "@" to differentiate branches from tags, but if the norm is
 to use "#", should be used this instead.
 
 
-## Other layouts
+### Other layouts
 
 There are other valid source code layout, but IMHO are not suitable
 for workflows that are git-friendly.
@@ -249,9 +249,9 @@ TBD (OBS, git-obs, git service)
 References
 ==========
 
-[1] https://github.com/openSUSE/obsgit
-[2] https://git-lfs.github.com/
-[3] https://github.com/openSUSE/obsgit/blob/master/obsgit/obsgit.py#L716
-[4] https://build.opensuse.org/package/meta/home:adrianSuSE:OBSGIT/git-example-2
-[5] https://github.com/adrianschroeter/git-example-1
-[6] https://github.com/adrianschroeter/git-example-3
+[1] https://github.com/openSUSE/obsgit  
+[2] https://git-lfs.github.com/  
+[3] https://github.com/openSUSE/obsgit/blob/master/obsgit/obsgit.py#L716  
+[4] https://build.opensuse.org/package/meta/home:adrianSuSE:OBSGIT/git-example-2  
+[5] https://github.com/adrianschroeter/git-example-1  
+[6] https://github.com/adrianschroeter/git-example-3  
