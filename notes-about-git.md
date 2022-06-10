@@ -25,7 +25,8 @@ heuristics[3] to identify and track them.
 
 Does not requires changes in the spec files and do not provide any
 significant change in the workflow.  This makes it ideal as a first
-step to introduce git in OBS.
+step to introduce git in OBS (as OBS would be still used to define
+projects, products, drive the review process and do the maintenance)
 
 
 Full git layout
@@ -58,13 +59,13 @@ history rewrite.
 For example, for my home project I can have:
 
 ```xml
-<scmsync>https://github.com/aplanas/package.git</scmsync>
+<scmsync>https://github.com/user/package.git</scmsync>
 ```
 
 Or if the user uses the openSUSE git service for their own project:
 
 ```xml
-<scmsync>ssh://git@code.opensuse.org:aplanas/package.git</scmsync>
+<scmsync>ssh://git@code.opensuse.org:user/package.git</scmsync>
 ```
 
 But for the pool of packages that will build the distribution, it
@@ -199,40 +200,278 @@ a very long time, as is the less disruptive one (also the less
 flexible).  Over the time (and in different stages) a full git layout
 should be deployed one user demand.
 
-TBD: present git-obs
+
+User add / remove a package using the traditional layout
+--------------------------------------------------------
+
+In this scenario we will create a new package, but using the
+traditional layout (raw tarballs and package assets all together).  We
+will use LFS to track the binary files and we will delegate into OBS
+all the review, release and maintenance process.
+
+We also introduce an optional tool `git-obs` that does some of the
+actions that `osc` is doing today, but adapted to the git use case.
+For example, creating a new package will require the presence of a
+metadata file in a new directory, and this tool will create one for us
+and reference a default project in our home.
+
+```bash
+> mkdir package; cd package
+
+# git-obs is a git plugin, and the `init` subcommand will create
+# the initial prackage structure.  This can be done manually too.
+
+> git obs init
+> ls -a1
+.git
+.obs
+
+> ls .obs
+meta.xml
+
+> cat .obs/meta.xml
+<package project="home:user" name="package">
+  <title/>
+  <description/>
+</package>
+
+# We can register the origin remote via `git remote`, and later
+# update the meta.xml, or use `git obs remote`.
+> git obs remote add origin git@code.opensuse.org/user/package.git
+> cat .obs/meta.xml
+<package project="home:user" name="package">
+  <title/>
+  <description/>
+  <scmsync>ssh://git@code.opensuse.org:user/package.git</scmsync>
+</package>
+
+> git remote -v
+origin  git@code.opensuse.org:user/package.git (fetch)
+origin  git@code.opensuse.org:user/package.git (push)
+
+# We use LFS to track large files
+> wget https://all-packages/package-1.0.0.tgz
+> git lfs track '*.tgz'
+> git add .gitattributes package-1.0.0.tgz
+
+# Create the spec and change files
+> emacs package.spec package.changes
+> git add *
+
+> git commit -a -m "Initial package"
+
+# Again, this is for convenience, as can be done manually.  In this
+# case would be a `git push`, to add the content into the git server,
+# and a chain of `osc api -x PUT/POST` to create the empty package and
+# upload the .osc/meta.xml
+> git obs push
+
+```
+
+Remove a package should be like:
+
+```bash
+> cd package
+
+# This maintain the package representation in OBS, but remove the link
+# (scmsync) in the meta.
+> git osc rdelete --soft
+
+# This remove the package completely in OBS, but keep the one in git.
+> git osc rdelete
+```
 
 
 User works with a package using the traditional layout
 ------------------------------------------------------
 
+Daily work of an user in OBS, using the traditional layout (keeping
+tarballs, and delegating into OBS the review / release process as
+today)
+
 ```bash
-git clone ssh://git@code.opensuse.org/aplanas/package.git
+> git clone ssh://git@code.opensuse.org/user/package.git
+
+> cd package
+
+> ls -a1
+.git
+.gitattributes
+.obs
+fix-01.patch
+package-1.0.0.tgz
+package.changes
+package.spec
+
+# The metadata information for the package is in .obs/meta.xml,
+# because is not a new package.
+
+> cat .obs/meta.xml
+<package project="home:user" name="package">
+  <title/>
+  <description/>
+  <scmsync>ssh://git@code.opensuse.org:user/package.git</scmsync>
+</package>
+
+# We are using git-lfs to store the binary files, for that we have the
+# ".gitattributes" file
+
+> git lfs track
+Listing tracked patterns:
+   ...
+   *.tgz (.gitattributes)
+   ...
+
+> git lfs ls-files
+a8fc3d48d9 - package-1.0.0.tgz
+
+> wget https://all-packages/package-1.0.1.tgz
+> git rm package-1.0.0.tgz
+> git add package-1.0.1.tgz
+> git status
+...
+        deleted:    package-1.0.0.tgz
+        new file:   package-1.0.1.tgz
+
+> emacs package.spec package.changes
+
+> git commit --signoff -a -m "Update to 1.0.1"
+> git push
+
 ```
+
+This version can be extended a bit, for example using in the `scmsync`
+tag a pointer to a branch.  This will allow some improvement over the
+current way that OBS handle source packages.  Multiple branches in the
+traditional layout will reference different code stream (Tumbleweed,
+SLE-15, ALP, etc).  In this case the metadata will be also different,
+with different `<package project="">` and different `<scmsync>`.
+
+
+User add / remove a package using the full layout
+-------------------------------------------------
+
+In this scenario we will create an empty git repo.  In the master /
+main branch we will have the pristine git clone (or unpacked tar ball)
+of the upstream project, and in the different branches we will have
+different version of the same package with different OBS metadata and
+spec files.
+
+```bash
+> mkdir package; cd package
+
+> git init
+> ls -a1
+.git
+
+# I am sure that git-obs can help here with a different subcommand,
+# for example, all this full scenario can be done with:
+# > git obs mkpac https://github.com/org/package.git
+
+> git remote add origin git@code.opensuse.org:user/package.git
+> git remote add upstream https://github.com/org/package.git
+> git remote -v
+origin  git@code.opensuse.org:user/package.git (fetch)
+origin  git@code.opensuse.org:user/package.git (push)
+upstream        https://github.com/org/pacakge.git (fetch)
+upstream        https://github.com/org/package.git (push)
+
+> git fetch --all
+> git checkout -b main --track upstream/main
+
+# Create the different branches
+> git checkout tags/v1.0 -b Tumbleweed
+> ls -a1
+.git
+Makefile
+package.c
+
+> git obs init --project home:user --branch Tumbleweed
+> ls -a1
+.git
+.obs
+Makefile
+package.c
+
+> cat .obs/meta.xml
+<package project="home:user" name="package">
+  <title/>
+  <description/>
+  <scmsync>ssh://git@code.opensuse.org:user/package.git#Tumbleweed</scmsync>
+</package>
+
+> git commit --signoff -a -m "Initial package"
+> git obs push
+
+```
+
 
 User works with a package using the full layout
 -----------------------------------------------
 
-TBD
+In this scenario we have a package that is present in Tumbleweed and
+in SLE.
 
-User add and remove personal packages
--------------------------------------
+```bash
+> git clone ssh://git@code.opensuse.org/user/package.git
 
-TBD
+> cd package
 
-User contributes to the pool packages
--------------------------------------
+> git branch --list
+  SLE-15-SP4
+  Tumbleweed
+* main
 
-TBD (reviews)
+# Main / master is a pristine copy
+> ls -a1
+.git
+Makefile
+package.c
 
-User contributes to multiple code streams
------------------------------------------
+# Contains the metadata (.obs) and the package spec file
+> git checkout Tumbleweed
+> ls -a1
+.git
+.obs
+Makefile
+package.c
+package.changes
+package.spec
 
-TBD
+> git remote add upstream https://github.com/org/package.git
+> git remote -v
+origin  git@code.opensuse.org:user/package.git (fetch)
+origin  git@code.opensuse.org:user/package.git (push)
+upstream        https://github.com/org/pacakge.git (fetch)
+upstream        https://github.com/org/package.git (push)
+
+> git fetch --all
+
+# We assume that we have commits in the Tumbleweed branch that are not
+# in the upstream, so we want to update the code and add our patches
+# on top
+> git rebase upstream/main
+> emacs package.spec package.changes
+> git commit --signoff -a -m "Update package"
+
+# Backport some fixes from upstrem in the SLE branch
+> git checkout SLE-15-SP4
+> git cherry-pick -x $SHA256
+> emacs package.spec package.changes
+> git commit --signoff -a -m "Fix bad issue"
+
+# Because the OBS - git is already stablished, OBS will start building
+# the package, if not we can trigger the build manually
+> git obs build
+
+```
+
 
 User fix an embargoed CVE
 -------------------------
 
 TBD
+
 
 Release manager updates Tumbleweed
 ----------------------------------
