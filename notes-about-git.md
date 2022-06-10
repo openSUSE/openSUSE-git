@@ -520,6 +520,8 @@ Architecture
 
 TBD (OBS, git-obs, git service)
 
+![Full git layout](full-git-arch-draft.png)
+
 
 References
 ==========
