@@ -467,6 +467,24 @@ upstream        https://github.com/org/package.git (push)
 ```
 
 
+User submit a maintenance update
+--------------------------------
+
+TBD
+
+
+User share code with others
+---------------------------
+
+TBD
+
+
+Re-using packages from other distributions
+------------------------------------------
+
+TDB
+
+
 User fix an embargoed CVE
 -------------------------
 
