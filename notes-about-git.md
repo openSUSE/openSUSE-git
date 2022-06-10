@@ -290,6 +290,10 @@ tarballs, and delegating into OBS the review / release process as
 today)
 
 ```bash
+# If the package is already in Factory, it will live in "pool", so we
+# need to start forking it
+> git obs fork https://code.opensuse.org/pool/package
+
 > git clone ssh://git@code.opensuse.org/user/package.git
 
 > cd package
@@ -413,6 +417,10 @@ In this scenario we have a package that is present in Tumbleweed and
 in SLE.
 
 ```bash
+# If the package is already in Factory, it will live in "pool", so we
+# need to start forking it
+> git obs fork https://code.opensuse.org/pool/package
+
 > git clone ssh://git@code.opensuse.org/user/package.git
 
 > cd package
