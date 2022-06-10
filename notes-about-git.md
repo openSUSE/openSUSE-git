@@ -351,6 +351,9 @@ traditional layout will reference different code stream (Tumbleweed,
 SLE-15, ALP, etc).  In this case the metadata will be also different,
 with different `<package project="">` and different `<scmsync>`.
 
+To contributing back into the forked project we should do an `osc sr`
+under this model.
+
 
 User add / remove a package using the full layout
 -------------------------------------------------
@@ -471,6 +474,13 @@ upstream        https://github.com/org/package.git (push)
 # Because the OBS - git is already stablished, OBS will start building
 # the package, if not we can trigger the build manually
 > git obs build
+
+# To contribute back into the foked project we can go to the Git
+# server (Gitea, Pagure, ...) and do a pull request from our fork to
+# the pool version of the package.
+
+# Another alternative is to extend `git-obs` to do the job for us.
+> git obs pr
 
 ```
 
