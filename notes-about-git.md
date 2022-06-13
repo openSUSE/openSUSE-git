@@ -470,6 +470,7 @@ upstream        https://github.com/org/package.git (push)
 > git cherry-pick -x $SHA256
 > emacs package.spec package.changes
 > git commit --signoff -a -m "Fix bad issue"
+> git push --force
 
 # Because the OBS - git is already stablished, OBS will start building
 # the package, if not we can trigger the build manually
