@@ -251,6 +251,15 @@ origin  git@code.opensuse.org:user/package.git (push)
 
 # We use LFS to track large files
 > wget https://all-packages/package-1.0.0.tgz
+> git lfs install
+
+# The default LFS server is associated with the remote URL.  For this
+# case the end point should be (`git lfs env`)
+# - (SSH)   git@code.opensuse.org:aplanas/package.git
+# - (HTTPS) https://code.opensuse.org/user/package.git/info/lfs
+#
+# Those endpoints can be changed via the "lfs.url" config field[7]
+
 > git lfs track '*.tgz'
 > git add .gitattributes package-1.0.0.tgz
 
@@ -265,7 +274,6 @@ origin  git@code.opensuse.org:user/package.git (push)
 # and a chain of `osc api -x PUT/POST` to create the empty package and
 # upload the .osc/meta.xml
 > git obs push
-
 ```
 
 Remove a package should be like:
@@ -341,7 +349,6 @@ a8fc3d48d9 - package-1.0.0.tgz
 
 > git commit --signoff -a -m "Update to 1.0.1"
 > git push
-
 ```
 
 This version can be extended a bit, for example using in the `scmsync`
@@ -409,7 +416,6 @@ package.c
 
 > git commit --signoff -a -m "Initial package"
 > git obs push
-
 ```
 
 
@@ -486,7 +492,6 @@ upstream        https://github.com/org/package.git (push)
 
 # Another alternative is to extend `git-obs` to do the job for us.
 > git obs pr
-
 ```
 
 
@@ -537,3 +542,4 @@ References
 [4] https://build.opensuse.org/package/meta/home:adrianSuSE:OBSGIT/git-example-2  
 [5] https://github.com/adrianschroeter/git-example-1  
 [6] https://github.com/adrianschroeter/git-example-3  
+[7] https://github.com/git-lfs/git-lfs/wiki/Tutorial#lfs-url
