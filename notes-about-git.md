@@ -478,8 +478,17 @@ upstream        https://github.com/org/package.git (push)
 > git commit --signoff -a -m "Fix bad issue"
 > git push --force
 
-# Because the OBS - git is already stablished, OBS will start building
-# the package, if not we can trigger the build manually
+# Because the OBS - git link was already stablished, OBS will start
+# building the package, if not we can trigger the build manually
+
+# We have two models available.  A push model, that is using the next
+# command `git obs build`.  This will connect to OBS and report that
+# there is a new version available.  Internally OBS will connect to
+# git and will recreate the source container before building it
+
+# The other approach is the pull model.  A trigger in the git server
+# will report into OBS the project name and the branch that get
+# updated, and will recreate the source container automatically.
 > git obs build
 
 # We can do local builds, fetching the build dependencies from OBS, or
