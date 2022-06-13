@@ -503,6 +503,129 @@ upstream        https://github.com/org/package.git (push)
 > git obs pr
 ```
 
+### A note about history rewrite and log linearization
+
+When a user do a pull request from their fork into the pool fork,
+there are some considerations about how it should be merged.
+
+In the typical scenario for git we will have three forks:
+
+- upstream: represent the git repository for the package itself, where
+  external developers make it advance.
+
+- pool: is the git repository (fork) that we will use in the
+  distribution (for example Tumbleweed).  This version contain
+  downstream patches inside the git history and the spec and (maybe)
+  changes files.
+
+- user: is the git repository, forked from "pool", that the user will
+  work on adding and updating new patches, among fixes in the spec
+  file.
+
+As drafted in the last two use cases, the typical work with git
+follows this schema:
+
+1. "pool" repository contains a copy of "upstream" plus some commits
+   (downstream patches) and the spec file and (maybe) the changes
+   file.
+2. An user fork the "pool" version in a different name space "user",
+   add new commits from "upstream", rebase / remove or add new
+   downstream patches, and update the spec file.
+3. Once the user is done, it will create a pull request with the
+   changes back into the "pool" repository.  At this time is expected
+   (not forced) that the user take care of rebasing the downstream
+   patches on top of the pure upstream code.  This would require a
+   `push --foce` into the user repository.
+4. The reviewers check the pull request and `merge` it into the "pool"
+   repository.
+
+It is this last point the one that can cause problem.  For example,
+let suppose that at certain moment the "pool" repository has this
+history:
+
+```bash
+pool> git log --graph --pretty=oneline --abbrev-commit
+* 78229d6 (HEAD -> Tumbleweed) Downstream fix and spec file
+* b6d8053 Initial commit
+```
+
+Basically is the original code from "upstream", represented by the
+first commit (Initial commit), plus the downstream changes.
+
+Later an user do a fork of "pool" to add the new changes done in
+upstream, and rebase the downstream changes on top of it:
+
+```bash
+user> git log --graph --pretty=oneline --abbrev-commit
+* 3ec47f2 (HEAD -> Tumbleweed) Downstream fix
+* 49b9aaa Upstream modification
+* b6d8053 Initial commit
+```
+
+Now the user do the pull request back to "pool", and after a positive
+review, it get merged:
+
+```bash
+pool> git log --graph --pretty=oneline --abbrev-commit
+*   527442c (HEAD -> Tumbleweed) Merge branch 'user' into pool
+|\
+| * 3ec47f2 Downstream fix
+| * 49b9aaa Upstream modification
+* | 78229d6 Downstream fix
+|/
+* b6d8053 Initial commit
+```
+
+Doing this naive merge we can see:
+
+1. The old "Downstream fix" is duplicated, one representing the
+   original commit and later the rebased one.
+2. The history is ugly, but there is no rewrite of it.
+
+The history duplication is IMHO a problem, and we should try to
+linearize the "pool" history.  Doing that will help when a new user
+review the history change to understand the code.  They will realize
+that the downstream changes are always floating on top of the upstream
+code.
+
+So, instead of a normal merge, we can integrate users change into
+"pool" with a `rebase --ff`, making the "pool" history something like
+this:
+
+```bash
+pool> git log --graph --pretty=oneline --abbrev-commit
+* 3ec47f2 (HEAD -> Tumbleweed) Downstream fix
+* 49b9aaa Upstream modification
+* b6d8053 Initial commit
+```
+
+As expected the downstream changes are on top, but we rewrite the
+history!  Note that the old "78229d6" commit is not there anymore, and
+is replaced later by "3ec47f2".
+
+This is a no-go for OBS in this form.  OBS should be able to access
+the past git history, so it can re-generate an old package again,
+using exactly the same assets in a way that can be trusted and
+replicated.  This forbid the history rewrite.
+
+The proposed solution is that OBS will maintain a set of hidden
+branches, very similar of how is done during the pull request
+branches[8], that point to any successfully build revision of the
+package (or successfully published revision of the package, to
+minimize the amount of those branches).  This branch will point to the
+history of this package, and so the git garbage collector will keep
+those commits during the package live cycle.
+
+For example, if github is using branches like `refs/pull/XX/head`, OBS
+can create branches like `refs/build/YY/head` to keep valid builds (or
+valid released builds) alive.
+
+This mechanism can be used also to store in this hidden branch the
+mangled spec file, where the release number (usually at 0) can be
+written in there, so the same package with the same old release number
+can be generated later on demand.
+
+
 
 User submit a maintenance update
 --------------------------------
@@ -554,4 +677,5 @@ References
 [5] https://github.com/adrianschroeter/git-example-1  
 [6] https://github.com/adrianschroeter/git-example-3  
 [7] https://github.com/git-lfs/git-lfs/wiki/Tutorial#lfs-url
-[8] https://www.diagrams.net/
+[8] https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/reviewing-changes-in-pull-requests/checking-out-pull-requests-locally
+[9] https://www.diagrams.net/
