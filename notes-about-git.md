@@ -476,6 +476,10 @@ upstream        https://github.com/org/package.git (push)
 # the package, if not we can trigger the build manually
 > git obs build
 
+# We can do local builds, fetching the build dependencies from OBS, or
+# using the new pbuild mechanism
+> git obs build --local
+
 # To contribute back into the foked project we can go to the Git
 # server (Gitea, Pagure, ...) and do a pull request from our fork to
 # the pool version of the package.
