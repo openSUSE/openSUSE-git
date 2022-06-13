@@ -532,6 +532,8 @@ TBD (OBS, git-obs, git service)
 
 ![Full git layout](full-git-arch-draft.png)
 
+Done with diagrams.net[8]
+
 
 References
 ==========
@@ -543,3 +545,4 @@ References
 [5] https://github.com/adrianschroeter/git-example-1  
 [6] https://github.com/adrianschroeter/git-example-3  
 [7] https://github.com/git-lfs/git-lfs/wiki/Tutorial#lfs-url
+[8] https://www.diagrams.net/
