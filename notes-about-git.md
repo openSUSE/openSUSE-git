@@ -79,7 +79,7 @@ should be something like:
 <scmsync>ssh://git@code.opensuse.org:pool/package.git#Tumbleweed</scmsync>
 ```
 
-The hashtag in the URL is used in some package manager to specify a
+The hash in the URL is used in some package manager to specify a
 branch name.
 
 
