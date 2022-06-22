@@ -36,6 +36,10 @@ The git repository will store the source code directly.  When possible
 this will be a clone of the original upstream repository, but in other
 cases it will store the uncompressed version of the upstream tarball.
 
+In a nutshell, the full git layout will look as follows:
+
+![packaging_workflow](./packaging_workflow.drawio.svg)
+
 From here, we have several choices that must be evaluated.  Some of
 them are enumerated here.
 
