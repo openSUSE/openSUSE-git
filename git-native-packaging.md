@@ -149,7 +149,7 @@ revision and it's record of changes.
 
 In order to get inspiration to solve that let's look at how the
 current tarball based method does it. In openSUSE the canonical
-storage for sources is the openSUSE Build Service. So for example in
+storage for sources is the Open Build Service. So for example in
 the _openSUSE:Factory_ project the sources of the _lua-macros_
 package look like this:
 
