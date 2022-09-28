@@ -243,7 +243,7 @@ Such a strategy can be implemented as a small helper script:
 	chmod 755 ~/bin/git-merge-theirs
 
 This strategy applied on the previous git example one could use a
-comman like the following to always merge the _opensuse_ branch into
+command like the following to always merge the _opensuse_ branch into
 _factory_:
 
 	$ git merge --allow-unrelated-histories -s theirs opensuse
