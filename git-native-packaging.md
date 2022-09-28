@@ -260,6 +260,21 @@ In addition the second parent in _factory_ commits always points to
 the commit of submissions, therefore the whole history attached to
 it.
 
+### Caveats
+
+#### Incorrect branches
+
+A naive _git branch_ of _factory_ would yield the correct tree but
+not the correct chain of commits. Such a setup must be detected by
+tooling and prevented.
+
+![gitwrong](gitwrong.png)
+
+A correct branch needs to be based on the second parent of
+_factory_:
+
+![gitok](gitok.png)
+
 # Addendum
 
 The Cockpit package is actually maintained in git with branches for
