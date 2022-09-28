@@ -232,15 +232,18 @@ Such a strategy can be implemented as a small helper script:
 
 	$ cat > ~/bin/git-merge-theirs <<EOF
 	#!/bin/bash -e
+	while [ "$1" != "--" ]; do
+		shift
+	done
+	shift
+	[ "$#" -eq 2 ]
 	# Merge strategy that always uses the other tree, completely ignoring ours
-	dd="$1" # --
-	h="$2" # HEAD
-	c="$3" # the actual merge commit
-	[ "$#" = '3' ] && [ "$dd" = "--" ] && [ "$h" = 'HEAD' ]
+	h="$1" # HEAD
+	c="$2" # the actual merge commit
 	tree="$(git rev-parse "$c^{tree}")"
 	git read-tree --reset "$tree"
 	EOF
-	chmod 755 ~/bin/git-merge-theirs
+	$ chmod 755 ~/bin/git-merge-theirs
 
 This strategy applied on the previous git example one could use a
 command like the following to always merge the _opensuse_ branch into
@@ -274,6 +277,59 @@ A correct branch needs to be based on the second parent of
 _factory_:
 
 ![gitok](gitok.png)
+
+## Managing a project in git
+
+The same approach that works for single packages also works on
+project level. A project basically is an aggregation of packages in
+subdirectories. Means commits to the project need to refer to a tree
+that contains the package in a subdirectory.
+
+There are two ways how a project could aggregate packages. One way to
+aggregate a factory branch as described above. Another way would be
+to omit the per-package factory branch and directly merge into the
+project as it was done on package level before. 
+
+In both cases again a custom merge method is needed:
+
+	$ cat > ~/bin/git-merge-subdir <<EOF
+	#!/bin/bash -e
+	while [ "$1" != "--" ]; do
+		shift
+	done
+	shift
+	[ "$#" -eq 2 ]
+	# Merge strategy that always uses the other tree, completely ignoring ours
+	h="$1" # HEAD
+	c="$2" # the actual merge commit
+	: "${SUBDIR:?}"
+	tree="$(git rev-parse "$c^{tree}")"
+	newtree="$(echo -e "040000 tree $tree\t$SUBDIR" | git mktree)"
+	git read-tree --reset "$newtree"
+	EOF
+	$ chmod 755 ~/bin/git-merge-subdir
+
+### Merging the factory branch into the project
+
+	$ git fetch https://path/to/pkgA.git factory
+	$ SUBDIR=pkgA git merge --allow-unrelated-histories -s subdir FETCH_HEAD
+	$ git fetch https://path/to/pkgB.git factory
+	$ SUBDIR=pkgB git merge --allow-unrelated-histories -s subdir FETCH_HEAD
+
+With two packages A and B the history could look like this:
+
+![project1](project1.png)
+
+### Merging the package directly into the project
+
+	$ git fetch https://path/to/pkgA.git opensuse
+	$ SUBDIR=pkgA git merge --allow-unrelated-histories -s subdir FETCH_HEAD
+	$ git fetch https://path/to/pkgB.git main
+	$ SUBDIR=pkgB git merge --allow-unrelated-histories -s subdir FETCH_HEAD
+
+Now the history is a bit simpler:
+
+![project2](project2.png)
 
 # Addendum
 
