@@ -280,19 +280,24 @@ _factory_:
 
 ## Managing a project in git
 
-### Monorepo approach
+### Monorepo/subtree approach
 
 The same approach that works for single packages also works on
 project level. A project basically is an aggregation of packages in
 subdirectories. Means commits to the project need to refer to a tree
 that contains the package in a subdirectory.
 
-There are two ways how a project could aggregate packages. One way to
-aggregate a factory branch as described above. Another way would be
-to omit the per-package factory branch and directly merge into the
-project as it was done on package level before. 
+With this approach the whole history of all packages and their
+upstreams would be in one giant repository. When setting it up the
+right way using subtrees every package still keeps it's own history.
 
-In both cases again a custom merge method is needed:
+There are two ways how a project could aggregate packages in this
+model. One way would be to aggregate a factory branch as described
+above. Another way would be to omit the per-package factory branch
+and directly merge into the project as it was done on package level
+before.
+
+Again a custom merge method is needed:
 
 	$ cat > ~/bin/git-merge-subdir <<EOF
 	#!/bin/bash -e
@@ -305,10 +310,23 @@ In both cases again a custom merge method is needed:
 	h="$1" # HEAD
 	c="$2" # the actual merge commit
 	: "${SUBDIR:?}"
-	tree="$(git rev-parse "$c^{tree}")"
-	newtree="$(echo -e "040000 tree $tree\t$SUBDIR" | git mktree)"
-	git read-tree --reset "$newtree"
+	treeref="$(git rev-parse "$c^{tree}")"
+	# replace existing subdir or add new one
+	makenewtree() {
+		local found=''
+		while read m t r d; do
+			if [ "$d" = "$SUBDIR" ]; then
+				r="$treeref"
+				found=1;
+			fi
+			echo -e "$m $t $r\t$d"
+		done < <(git cat-file -p HEAD^{tree})
+		[ -n "$found" ] || echo -e "040000 tree $treeref\t$SUBDIR"
+	}
+	newtreeref=$(makenewtree | git mktree)
+	git read-tree "$newtreeref"
 	EOF
+
 	$ chmod 755 ~/bin/git-merge-subdir
 
 ### Merging the factory branch into the project
