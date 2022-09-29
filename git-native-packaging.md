@@ -280,6 +280,8 @@ _factory_:
 
 ## Managing a project in git
 
+### Monorepo approach
+
 The same approach that works for single packages also works on
 project level. A project basically is an aggregation of packages in
 subdirectories. Means commits to the project need to refer to a tree
@@ -333,6 +335,8 @@ Now the history is a bit simpler:
 
 # Addendum
 
+## Cockpit
+
 The Cockpit package is actually maintained in git with branches for
 every version. It can be imported to produce a git repository as
 described in this article:
@@ -356,6 +360,43 @@ described in this article:
 
 	git describe --first-parent
 	# cockpit-13-g11f0abdd9
+
+## aaa_base
+
+aaa_base is a SUSE owned package fully maintained in git, including spec file.
+It's possible to build a _factory_ branch that resembles the checkins to the
+actual _openSUSE:Factory_ by looking at the OBS history and creating merges:
+
+	mkdir aaa_base
+	cd aaa_base
+	git init --initial-branch=factory
+	git commit --allow-empty -m "new package"
+	git tag start
+
+	git fetch https://github.com/openSUSE/aaa_base master
+	git branch aaa_base FETCH_HEAD
+
+	revs="$(osc api /source/openSUSE:Factory/aaa_base/_history|sed -ne 's/.*<version>.*+git.*\.\(.*\)<\/version>/\1/p')"
+	for i in $revs; do
+	  git merge -s theirs --allow-unrelated-histories -m "factory commit $(git rev-list tags/start..HEAD --count)" $i
+	done
+
+Even though the full history is present it's possible to only view the changes
+relevant in the _factory_ branch:
+
+	$ git log --oneline --first-parent
+	3edbffb (HEAD -> factory) factory commit 2068
+	70ab09d factory commit 2063
+	8272183 factory commit 2060
+	...
+
+Or for example only the spec file changes:
+
+	$ git log --oneline --first-parent aaa_base.spec
+	3edbffb (HEAD -> factory) factory commit 2068
+	c74e2aa factory commit 2053
+	cd49bf4 factory commit 2050
+	2833bea factory commit 2017
 
 [^1]: https://en.wikipedia.org/wiki/Pristine_Sources
 [^2]: http://ftp.rpm.org/max-rpm/ch-rpm-philosophy.html
