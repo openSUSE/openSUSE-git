@@ -53,7 +53,7 @@ to update any package. Also customers who like to take advantage
 open source can apply customizations in straight forward way based
 on the distributions's sources.
 
-## Pristine Sources and Git
+## Git
 
 Times have changed. The distributed version control system `git`
 dominates the free software world. The vast majority of upstream
@@ -67,10 +67,63 @@ patches is no longer a natural workflow. It would be much easier to
 just branch the upstream code at the release tag and apply git
 commits on top.
 
-Let's make up a simple example pacakge. We assume the history has a
-chain of three commits (circles). There's a tag for version 1.0
-(rectangle) while the main branch already advanced. Remember that
-_git_ actually stores file system trees rather than diffs[^6]. So
+First we need to have a quick understanding how git works though. Git is a
+content-addressable filesystem. It knows about some basic objects:
+
+* blob: arbitrary data, ie file content
+* tree: a directory listing that refers to other trees or blobs, giving them names and permissions
+* commit: refers to a tree and ancestor commits to track changes over time. It also contains author and committer information.
+
+All objects are hashed and typically referred to by their sha1 checksum. To
+make it easier for humans there are named references as entry
+points. The default entry point is called HEAD. So a simple repo with one file
+could look like this:
+
+    $ ls -l
+    -rw-r--r-- 1 ln ln      4  1. Dez 17:39 foo
+    drwxr-xr-x 8 ln ln    166  1. Dez 17:39 .git/
+    $ cat .git/HEAD 
+    ref: refs/heads/main
+    $ cat .git/refs/heads/main 
+    4fee468c4536b03b3c2cc068185eafa8998b57a5
+    $ git cat-file -p 4fee468c4536b03b3c2cc068185eafa8998b57a5
+    tree 6a09c59ce8eb1b5b4f89450103e67ff9b3a3b1ae
+    author Ludwig Nussel <ludwig.nussel@suse.de> 1669912784 +0100
+    committer Ludwig Nussel <ludwig.nussel@suse.de> 1669912784 +0100
+    
+    start
+    $ git cat-file -p 6a09c59ce8eb1b5b4f89450103e67ff9b3a3b1ae
+    100644 blob 5716ca5987cbf97d6bb54920bea6adde242d87e6    foo
+    git cat-file -p 5716ca5987cbf97d6bb54920bea6adde242d87e6
+    bar
+
+To visualize this example we use different icons: blob
+![blob](blob.png), tree ![tree](tree.png), commit
+![commit](commit.png)
+
+So the example with one file would look like this:
+
+![onefile](onefile.png)
+
+When adding new commit that adds a directory, the tree would refer
+to the tree describing the subdirectory and the same blob as before.
+
+    $ git ls-tree HEAD
+    040000 tree ee314a31b622b027c10981acaed7903a3607dbd4    subdir
+    100644 blob 5716ca5987cbf97d6bb54920bea6adde242d87e6    foo
+    $ git ls-tree HEAD:d
+    100644 blob 5716ca5987cbf97d6bb54920bea6adde242d87e6    bar
+
+![twocommits](twocommits.png)
+
+The important takeaway to understand from that is that _git_
+actually stores snapshots of filesystem trees rather than diffs[^5]
+
+## Pristine Sources and Git
+
+Let's make up a simple example package. We assume the history has a
+chain of three commits. There's a tag for version 1.0
+while the main branch already advanced. . So
 every commit in the history refers to a new version of a tree
 (triangle):
 
@@ -79,7 +132,7 @@ every commit in the history refers to a new version of a tree
 The example is a a simple C program and a Makefile so the tree
 attached to the top commit of the _main_ branch looks like this:
 
-	$ git cat-file -p `git rev-parse main^{tree}`
+	$ git ls-tree main
 	100644 blob dc03f55b8fcc9d9a4522abae54ce79ebef15123d    Makefile
 	100644 blob 33a1de5093676429c636cd7f5adb29d5df2a55b2    hello.c
 
@@ -92,17 +145,17 @@ example):
 
 So the tree would look like this now:
 
-	$ git cat-file -p `git rev-parse opensuse^{tree}`
+	$ git ls-tree main
 	100644 blob 637ad06d950498ac9652746d861c8dc9265f153c    Makefile
 	100644 blob 088b6962e0ad4713e488fd4e394680ea8b4b452e    hello.c
 	100644 blob bf22322d2da0b2799287949b546f9ca7da4e5355    hello.spec
 
-And the chain of commits like this:
+And the chain of commits like this (omitting blobs for simplicity):
 
 ![git2](git2.png)
 
 In this case the spec file does not need to list sources nor patches
-as that's actually the current directory[^5]:
+as that's actually the current directory[^6]:
 
 	Name: hello
 	Version: 1.0
@@ -214,8 +267,8 @@ preserved.
 ### Eat the cake and have it too: rebase and merge at the same time
 
 In contrast to OBS in git a commit can have multiple parents. So
-instead of throwing away the history of a submission it's actually
-possible to refer to both to the previous commit factory as well as
+instead of throwing away the history of a submission, it's actually
+possible to refer to both the previous commit in factory, as well as
 the history in the devel branch. That's a merge. However, with the
 rebases going on as described previously a normal merge would lead
 to conflicts. Factory however is not interested in resolving
@@ -246,8 +299,8 @@ Such a strategy can be implemented as a small helper script:
 	$ chmod 755 ~/bin/git-merge-theirs
 
 This strategy applied on the previous git example one could use a
-command like the following to always merge the _opensuse_ branch into
-_factory_:
+command like the following to always merge the _opensuse_ branch into a
+_factory_ branch:
 
 	$ git merge --allow-unrelated-histories -s theirs opensuse
 
@@ -267,9 +320,9 @@ it.
 
 #### Incorrect branches
 
-A naive _git branch_ of _factory_ would yield the correct tree but
-not the correct chain of commits. Such a setup must be detected by
-tooling and prevented.
+A naive _git branch_ of the _factory_ branch would yield the correct
+tree but not the correct chain of commits. Such a setup must be
+detected by tooling and prevented.
 
 ![gitwrong](gitwrong.png)
 
@@ -342,14 +395,84 @@ With two packages A and B the history could look like this:
 
 ### Merging the package directly into the project
 
+It's also possible to omit the _factory_ branch in packages and just
+refer to the relevant commits themselves. That means the history of
+a package is not really preserved in the package specific repos but
+only in projects that use a package.
+
 	$ git fetch https://path/to/pkgA.git opensuse
 	$ SUBDIR=pkgA git merge --allow-unrelated-histories -s subdir FETCH_HEAD
 	$ git fetch https://path/to/pkgB.git main
 	$ SUBDIR=pkgB git merge --allow-unrelated-histories -s subdir FETCH_HEAD
 
-Now the history is a bit simpler:
+The graph now looks a bit simpler:
 
 ![project2](project2.png)
+
+### Submodule approach
+
+Monorepo/subtree recursively includes package history for each and
+every package. That can be intended but for large repos might be a
+disadvantage for size reasons.
+Submodules are kind of hack. As we've learned before, trees either
+refer to blobs or other trees. In case of submodules a tree can
+refer to a commit. Taking the simple subdir example from above but
+having the subdir as submodule the tree would look like this:
+
+    $ git ls-tree HEAD
+    100644 blob 107edb072388276de5391a71dc5282f47a2066d5    .gitmodules
+    160000 commit 0528507574f188a0b46b1f4c1e6d81f78b5dcfa0  subdir
+    100644 blob 5716ca5987cbf97d6bb54920bea6adde242d87e6    foo
+
+Or visualized:
+
+![submodule](submodule.png)
+
+The referenced commit object is actually not stored in the same git
+repo but comes from somewhere else:
+
+     $ git cat-file -p 0528507574f188a0b46b1f4c1e6d81f78b5dcfa0
+     fatal: Not a valid object name 0528507574f188a0b46b1f4c1e6d81f78b5dcfa0
+     $ cd subdir
+     $ git cat-file -p 0528507574f188a0b46b1f4c1e6d81f78b5dcfa0
+     tree ee314a31b622b027c10981acaed7903a3607dbd4
+     author [...]
+
+Where from is specified in the _.gitmodules_ file:
+
+    [submodule "subdir"]
+        path = subdir
+        url = https://git.example.com/subdir.git
+
+Most of that magic is handled by the _git submodule_ command.
+
+So a project that has packages in submodules could look like this:
+
+![submodule](submoduleproject.png)
+
+However, since the referenced commits are not actually in the
+project repo it is not guaranteed that they actually still exist in
+the other repos as no branch contains them there. Therefore in the
+submodule approach the packages themselves do need something like
+the _factory_ branch for each project that uses the package.
+Protected in a way that it cannot be removed or altered:
+
+![submodule](submoduleproject2.png)
+
+A further complication is the _.gitmodules_ file. For one it's a
+single file. So if multiple packages are to be added or removed,
+submission need actual merging and may therefore conflict.
+The URL in submodule is normally an absolute one. That means a
+project can't simply be mirrored to some other server including all
+packages. The clone would still refer to the original server. An
+altenative would be to use relative URL. Git interprets them
+relative to the origin URL. A mirror would then have to replicate
+the directory structure. Eg.
+
+    [submodule "subdir"]
+        path = subdir
+        url = ../pool/subdir.git
+
 
 # Addendum
 
@@ -420,5 +543,6 @@ Or for example only the spec file changes:
 [^2]: http://ftp.rpm.org/max-rpm/ch-rpm-philosophy.html
 [^3]: https://ibiblio.org/pub/historic-linux/distributions/bogus-1.0.1/Announce-BOGUS-1.0
 [^4]: https://ibiblio.org/pub/historic-linux/distributions/bogus-1.0.1/bogus-1.0.1/notes/Announce
-[^5]: `rpmbuild` as a `--build-in-place` option for that
-[^6]: https://github.blog/2020-12-17-commits-are-snapshots-not-diffs/
+[^5]: https://github.blog/2020-12-17-commits-are-snapshots-not-diffs/
+[^6]: `rpmbuild` as a `--build-in-place` option for that
+[^7]: https://git-scm.com/book/en/v2/Git-Tools-Submodules
