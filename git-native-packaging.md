@@ -196,15 +196,15 @@ Now for the hard part. How to keep track of distro changes over
 time? The attentive reader will have noticed that the rebase of the
 _opensuse_ branch in the previous example would require a force push
 of the branch to store it somewhere. That would lose the previous
-revision and it's record of changes.
+revision and it's record of changes. In order to get inspiration to
+solve that let's look at how the current tarball based method does
+it in OBS.
 
 ### How OBS stores package revisions
 
-In order to get inspiration to solve that let's look at how the
-current tarball based method does it. In openSUSE the canonical
-storage for sources is the Open Build Service. So for example in
-the _openSUSE:Factory_ project the sources of the _lua-macros_
-package look like this:
+In openSUSE the canonical storage for sources is the Open Build
+Service. So for example in the _openSUSE:Factory_ project the
+sources of the _lua-macros_ package look like this:
 
 	$ osc api /source/openSUSE:Factory/lua-macros
 	<directory name="lua-macros" rev="8" vrev="2" srcmd5="4cc16b450037cf14655c8f7f1e051d08">
@@ -213,7 +213,7 @@ package look like this:
 	  <entry name="macros.lua" md5="bd9dea0cdc46f3c5e9207de9722dd3ea" size="1420" mtime="1662126891"/>
 	</directory>
 
-Ie a list of files and their checksum. The storage of revisions is
+I.e. a list of files and their checksum. The storage of revisions is
 linear. In this example the previous revision is 7:
 
 	osc api /source/openSUSE:Factory/lua-macros?rev=7
@@ -252,7 +252,7 @@ would look like this:
 
 ![obs1](obs1.png)
 
-Ie two disconnected histories but referring to the same files.
+I.e. two disconnected histories but referring to the same files.
 
 The very same could be done in _git_ actually. It's possible to load
 the tree of a random commit into the index and commit the result:
@@ -275,11 +275,11 @@ to conflicts. Factory however is not interested in resolving
 conflicts. All that's needed is the tree of the top commit in a
 submission.
 
-That requirement can be implemented as a merge strategy. Git already
-has an _ours_ strategy built in that produces a merge commit that
-does not actually merge the other side but keeps referring to the
-current tree. What's needed here is a 'theirs' strategy that ignores
-the current tree and just refers to the one submitted.
+Git already has an _ours_ strategy built in that produces a merge
+commit that does not actually merge the other side but keeps
+referring to the current tree. What's basically needed from the
+point of view of the factory branch is a 'theirs' strategy that
+ignores the current tree and just refers to the one submitted.
 
 Such a strategy can be implemented as a small helper script:
 
@@ -299,18 +299,27 @@ Such a strategy can be implemented as a small helper script:
 	$ chmod 755 ~/bin/git-merge-theirs
 
 This strategy applied on the previous git example one could use a
-command like the following to always merge the _opensuse_ branch into a
-_factory_ branch:
+command like the following to merge the _opensuse_ branch into the
+current (in this case _factory_) branch:
 
-	$ git merge --allow-unrelated-histories -s theirs opensuse
+	$ git merge --allow-unrelated-histories -s theirs -m "merge devel branch" opensuse
 
-It would produce a graph like this:
+Alternatively it's also possible to 'artificially' generate a commit
+with the desired properties and advance the factory branch using low
+level git commands. This method would work if the _factory_ branch
+is not checked out:
+
+    $ git commit-tree -p factory -p opensuse -m "merge devel branch" $(git rev-parse "opensuse^{tree}")
+    0852de2328a87546a60a19d2c99d0e9658f6a7a2
+    $ git update-ref factory 0852de2328a87546a60a19d2c99d0e9658f6a7a2
+
+Both methods would produce a graph like this:
 
 ![git4](git4.png)
 
 Now when following the first parent in the _factory_ branch one
-actually gets a result similar to OBS. Ie commits that refer to the
-trees of the submissions.
+actually gets a result similar to OBS. I.e. commits that refer to
+the trees of the submissions.
 
 In addition the second parent in _factory_ commits always points to
 the commit of submissions, therefore the whole history attached to
@@ -321,8 +330,10 @@ it.
 #### Incorrect branches
 
 A naive _git branch_ of the _factory_ branch would yield the correct
-tree but not the correct chain of commits. Such a setup must be
-detected by tooling and prevented.
+tree but not the correct chain of commits. No information is lost way but
+history may look confusing and will be hard to visualize. So in order to keep a
+linear history that resembles pristine source patches such a setup must
+be detected by tooling and prevented.
 
 ![gitwrong](gitwrong.png)
 
@@ -333,12 +344,17 @@ _factory_:
 
 ## Managing a project in git
 
+Where there's one package there's usually more. It is desirable to
+build packages together and have a single git revision to refer to
+the composition. In OBS' terms that's called a project. A project is
+basically a directory that contains packages in subdirectories.
+
 ### Monorepo/subtree approach
 
 The same approach that works for single packages also works on
-project level. A project basically is an aggregation of packages in
-subdirectories. Means commits to the project need to refer to a tree
-that contains the package in a subdirectory.
+project level. As a project is an aggregation of packages in
+subdirectories, the commits in the project need to refer to trees
+that contain the packages in subdirectories.
 
 With this approach the whole history of all packages and their
 upstreams would be in one giant repository. When setting it up the
@@ -382,7 +398,7 @@ Again a custom merge method is needed:
 
 	$ chmod 755 ~/bin/git-merge-subdir
 
-### Merging the factory branch into the project
+### Merging the factory branch of packages into the project
 
 	$ git fetch https://path/to/pkgA.git factory
 	$ SUBDIR=pkgA git merge --allow-unrelated-histories -s subdir FETCH_HEAD
@@ -413,11 +429,13 @@ The graph now looks a bit simpler:
 
 Monorepo/subtree recursively includes package history for each and
 every package. That can be intended but for large repos might be a
-disadvantage for size reasons.
-Submodules are kind of hack. As we've learned before, trees either
-refer to blobs or other trees. In case of submodules a tree can
-refer to a commit. Taking the simple subdir example from above but
-having the subdir as submodule the tree would look like this:
+disadvantage for size reasons. Git submodules were created to
+overcome this disadvantage with a hack. Instead of chaining commits,
+submodules use the tree instead.
+As we've learned before, trees either refer to blobs or other trees.
+In case of submodules a tree can refer to a commit. Taking the
+simple subdir example from above but having the subdir as submodule
+the tree would look like this:
 
     $ git ls-tree HEAD
     100644 blob 107edb072388276de5391a71dc5282f47a2066d5    .gitmodules
@@ -450,22 +468,32 @@ So a project that has packages in submodules could look like this:
 
 ![submodule](submoduleproject.png)
 
-However, since the referenced commits are not actually in the
-project repo it is not guaranteed that they actually still exist in
-the other repos as no branch contains them there. Therefore in the
-submodule approach the packages themselves do need something like
-the _factory_ branch for each project that uses the package.
-Protected in a way that it cannot be removed or altered:
+#### Pitfalls
+
+##### Missing references
+
+The commits references in the tree are intentionally not actually in the
+project repo to save space. That however means it is not guaranteed that they
+still exist in the linked repos. Garbage collection or force pushes could just
+delete commits.
+
+Therefore in the submodule approach package repos themselves do need
+something like the _factory_ branch for each project that uses the
+package. That branch needs to be protected in a way that it cannot
+be removed or altered by the package repo owner.
 
 ![submodule](submoduleproject2.png)
+
+##### gitmodules file
 
 A further complication is the _.gitmodules_ file. For one it's a
 single file. So if multiple packages are to be added or removed,
 submission need actual merging and may therefore conflict.
-The URL in submodule is normally an absolute one. That means a
+
+Also, the URL in submodule is normally an absolute one. That means a
 project can't simply be mirrored to some other server including all
 packages. The clone would still refer to the original server. An
-altenative would be to use relative URL. Git interprets them
+alternative would be to use relative URL. Git interprets them
 relative to the origin URL. A mirror would then have to replicate
 the directory structure. Eg.
 
