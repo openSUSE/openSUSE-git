@@ -82,9 +82,9 @@ could look like this:
     $ ls -l
     -rw-r--r-- 1 ln ln      4  1. Dez 17:39 foo
     drwxr-xr-x 8 ln ln    166  1. Dez 17:39 .git/
-    $ cat .git/HEAD 
+    $ cat .git/HEAD
     ref: refs/heads/main
-    $ cat .git/refs/heads/main 
+    $ cat .git/refs/heads/main
     4fee468c4536b03b3c2cc068185eafa8998b57a5
     $ git cat-file -p 4fee468c4536b03b3c2cc068185eafa8998b57a5
     tree 6a09c59ce8eb1b5b4f89450103e67ff9b3a3b1ae
@@ -366,7 +366,7 @@ above. Another way would be to omit the per-package factory branch
 and directly merge into the project as it was done on package level
 before.
 
-Again a custom merge method is needed:
+Again a custom merge method could be used:
 
 	$ cat > ~/bin/git-merge-subdir <<EOF
 	#!/bin/bash -e
@@ -504,56 +504,26 @@ the directory structure. Eg.
 
 # Addendum
 
-## Cockpit
-
-The Cockpit package is actually maintained in git with branches for
-every version. It can be imported to produce a git repository as
-described in this article:
-
-	mkdir cockpit
-	cd cockpit
-	git init --initial-branch=factory
-	git commit --allow-empty -m "new package"
-	git tag -a cockpit -m "new package"
-
-	git fetch https://github.com/cockpit-project/cockpit.git
-	git branch upstream FETCH_HEAD
-	git fetch -t https://github.com/cockpit-project/cockpit.git
-
-	for i in 215 222 225 228 232 236 238.1 242 243 244 250 251.3 271; do
-		git tag upstream-$i $i
-		git fetch https://github.com/openSUSE/cockpit opensuse-"$i"
-		git merge --allow-unrelated-histories -s theirs FETCH_HEAD -m "submit version $i"
-	done
-	git tag devel FETCH_HEAD
-
-	git describe --first-parent
-	# cockpit-13-g11f0abdd9
-
 ## aaa_base
 
 aaa_base is a SUSE owned package fully maintained in git, including spec file.
 It's possible to build a _factory_ branch that resembles the checkins to the
-actual _openSUSE:Factory_ by looking at the OBS history and creating merges:
+actual _openSUSE:Factory_ by looking at the OBS history:
 
-	mkdir aaa_base
-	cd aaa_base
-	git init --initial-branch=factory
-	git commit --allow-empty -m "new package"
-	git tag start
-
-	git fetch https://github.com/openSUSE/aaa_base master
-	git branch aaa_base FETCH_HEAD
-
-	revs="$(osc api /source/openSUSE:Factory/aaa_base/_history|sed -ne 's/.*<version>.*+git.*\.\(.*\)<\/version>/\1/p')"
-	for i in $revs; do
-	  git merge -s theirs --allow-unrelated-histories -m "factory commit $(git rev-list tags/start..HEAD --count)" $i
-	done
+    $ git clone https://github.com/openSUSE/aaa_base
+    $ cd aaa_base
+    $ s="$(git commit-tree -m "start" "$(git mktree < /dev/null)")"
+    $ p="$s"
+    $ revs="$(osc api /source/openSUSE:Factory/aaa_base/_history|sed -ne 's/.*<version>.*+git.*\.\(.*\)<\/version>/\1/p')"
+    $ for i in $revs; do
+    $   p="$(git commit-tree -p "$p" -p "$i" -m "factory commit $(git rev-list "$s".."$p" --count)" "$i^{tree}")"
+    $ done
+    $ git update-ref refs/heads/factory "$p"
 
 Even though the full history is present it's possible to only view the changes
 relevant in the _factory_ branch:
 
-	$ git log --oneline --first-parent
+	$ git log --oneline --first-parent factory
 	3edbffb (HEAD -> factory) factory commit 2068
 	70ab09d factory commit 2063
 	8272183 factory commit 2060
@@ -561,11 +531,31 @@ relevant in the _factory_ branch:
 
 Or for example only the spec file changes:
 
-	$ git log --oneline --first-parent aaa_base.spec
+	$ git log --oneline --first-parent factory -- aaa_base.spec
 	3edbffb (HEAD -> factory) factory commit 2068
 	c74e2aa factory commit 2053
 	cd49bf4 factory commit 2050
 	2833bea factory commit 2017
+
+## Cockpit
+
+The Cockpit package is maintained in git with an opensuse branch atop of every
+upstream revision. It can be imported to produce a git repository as described
+in this article:
+
+    $ git clone https://github.com/openSUSE/cockpit
+    $ cd cockpit
+    $ s="$(git commit-tree -m "start" "$(git mktree < /dev/null)")"
+    $ git tag -a cockpit "$s"
+    $ p="$s"
+    $ revs="$(git for-each-ref --format '%(refname)' 'refs/remotes/origin/opensuse-*')"
+    $ for i in $revs; do
+    $   p="$(git commit-tree -p "$p" -p "$i" -m "merge version ${i#*/opensuse-}" "$i^{tree}")"
+    $ done
+    $ git update-ref refs/heads/factory "$p"
+	
+	$ git describe --first-parent factory
+	cockpit-13-g11f0abdd9
 
 [^1]: https://en.wikipedia.org/wiki/Pristine_Sources
 [^2]: http://ftp.rpm.org/max-rpm/ch-rpm-philosophy.html
