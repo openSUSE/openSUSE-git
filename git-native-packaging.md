@@ -534,25 +534,27 @@ pool hierarchy requires support from the git hosting platform.
 Assuming that there can be many projects with a complex naming
 scheme like OBS, we can't just use a `factory` branch. Instead we
 translate the project naming into something like
-`refs/projects/openSUSE/Factory` (git refs can't have colons).
+`refs/projects/openSUSE:Factory` (Note git refs can't have colon, so
+there needs to be some quoting or transliteration, eg to an unicode
+character).
 Submitting the `hello` package into `openSUSE:Factory` could
 therefore work like the following:
 
 ![workflow2](workflow2.png)
 
 1. Create a pull request inside the package repo by copying the main ref into
-   e.g. `refs/requests/openSUSE/Factory/$number`. This needs support from
+   e.g. `refs/requests/openSUSE:Factory/$number`. This needs support from
    the git hosting platform.
 2. the staging machinery notices the request and assign a staging
    project. The machinery creates an automatic, transient `factory`
-   branch. In this case `refs/staging/openSUSE/Factory/A`. This
+   branch. In this case `refs/staging/openSUSE:Factory:A`. This
    commit could be signed to record reviews. Signing changes the commit hash
    but that wouldn't matter in this case as the commit is automatically created
    anyway.
 3. To actually build all packages assigned to a particular staging
    project, the machinery also creates a transient branch of the
    target project. In this case in
-   `refs/staging/openSUSE/Factory/A` pointing the package submodule
+   `refs/staging/openSUSE:Factory:A` pointing the package submodule
    to the newly created commit in the package.
 
 
@@ -562,7 +564,7 @@ into the target:
 ![workflow3](workflow3.png)
 
 1. Create or update the "factory" branch ie
-   `refs/projects/openSUSE/Factory` in the package
+   `refs/projects/openSUSE:Factory` in the package
 2. Make `main` branch of the project point to the staging commit.
    If there are multiple staging projects to check in, a merge commit could be
    created. In that case the trees would have to be merged. That's rather
@@ -572,12 +574,18 @@ into the target:
    main branch
 4. Clean up the transient refs in the package
 
-
 The goal is the target project pointing to the "factory" branch (ie
-`refs/projects/openSUSE/Factory`) in the package:
+`refs/projects/openSUSE:Factory`) in the package:
 
 ![workflow4](workflow4.png)
 
+## Further considerations
+
+It may make sense to include the package name in the project
+references. Ie something like
+`refs/projects/openSUSE:Factory/hello`. That would allow to keep
+history of the package in the same repo even if the package got
+renamed over time.
 
 # Addendum
 
