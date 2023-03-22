@@ -501,6 +501,83 @@ the directory structure. Eg.
         path = subdir
         url = ../pool/subdir.git
 
+###### Proposed extension features for submodules
+
+Git submodules upstream could be extended to allow the use of a
+template in absence of a specific submodule entry. Submodules can be
+detected through their commit references in the tree. So the
+_.gitmodules_ file could have a fallback entry like
+
+    [submodule "*"]
+        path = {name}
+        url = ../pool/{name}.git
+
+## Development workflow for submodule project
+
+When maintaining a project like openSUSE Factory in submodules,
+there needs to be a work-flow to add, update and remove packges from
+it. In openSUSE such changes are usually requested by packagers.
+With submodules package and project sources are independent git
+repositories. As package source references must not be lost, both
+need to be kept in sync.
+
+For illustration we assume that we have a project `openSUSE:Factory`. It lives
+on the git hosting server at `projects/openSUSE:Factory`.
+Furthermore a package `hello` is in `pool/hello`.
+
+We start off with an empty `openSUSE:Factory` project and a package
+`hello` that has some files in a tree. Creating a package in the
+pool hierarchy requires support from the git hosting platform.
+
+![workflow1](workflow1.png)
+
+Assuming that there can be many projects with a complex naming
+scheme like OBS, we can't just use a `factory` branch. Instead we
+translate the project naming into something like
+`refs/projects/openSUSE/Factory` (git refs can't have colons).
+Submitting the `hello` package into `openSUSE:Factory` could
+therefore work like the following:
+
+![workflow2](workflow2.png)
+
+1. Create a pull request inside the package repo by copying the main ref into
+   e.g. `refs/requests/openSUSE/Factory/$number`. This needs support from
+   the git hosting platform.
+2. the staging machinery notices the request and assign a staging
+   project. The machinery creates an automatic, transient `factory`
+   branch. In this case `refs/staging/openSUSE/Factory/A`. This
+   commit could be signed to record reviews. Signing changes the commit hash
+   but that wouldn't matter in this case as the commit is automatically created
+   anyway.
+3. To actually build all packages assigned to a particular staging
+   project, the machinery also creates a transient branch of the
+   target project. In this case in
+   `refs/staging/openSUSE/Factory/A` pointing the package submodule
+   to the newly created commit in the package.
+
+
+When staging tests succeed, the staging project has to be merged
+into the target:
+
+![workflow3](workflow3.png)
+
+1. Create or update the "factory" branch ie
+   `refs/projects/openSUSE/Factory` in the package
+2. Make `main` branch of the project point to the staging commit.
+   If there are multiple staging projects to check in, a merge commit could be
+   created. In that case the trees would have to be merged. That's rather
+   simple, just replacing entries in the current tree with updates ones from
+   each staging. That assumes no two stagings have the same packages of course.
+3. Delete the staging ref in the project or make it point to the new
+   main branch
+4. Clean up the transient refs in the package
+
+
+The goal is the target project pointing to the "factory" branch (ie
+`refs/projects/openSUSE/Factory`) in the package:
+
+![workflow4](workflow4.png)
+
 
 # Addendum
 
