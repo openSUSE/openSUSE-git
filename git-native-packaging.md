@@ -281,7 +281,7 @@ does not even need to be checked out to do that.
 
     $ git commit-tree -p factory -p opensuse -m "merge devel branch" $(git rev-parse "opensuse^{tree}")
     0852de2328a87546a60a19d2c99d0e9658f6a7a2
-    $ git update-ref factory 0852de2328a87546a60a19d2c99d0e9658f6a7a2
+    $ git update-ref refs/heads/factory 0852de2328a87546a60a19d2c99d0e9658f6a7a2
 
 So what the commad did was to create a commmit that has both the
 _factory_ and _opensuse_ branches as parent. The commit refers to
