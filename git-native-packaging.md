@@ -275,45 +275,22 @@ to conflicts. Factory however is not interested in resolving
 conflicts. All that's needed is the tree of the top commit in a
 submission.
 
-Git already has an _ours_ strategy built in that produces a merge
-commit that does not actually merge the other side but keeps
-referring to the current tree. What's basically needed from the
-point of view of the factory branch is a 'theirs' strategy that
-ignores the current tree and just refers to the one submitted.
-
-Such a strategy can be implemented as a small helper script:
-
-	$ cat > ~/bin/git-merge-theirs <<EOF
-	#!/bin/bash -e
-	while [ "$1" != "--" ]; do
-		shift
-	done
-	shift
-	[ "$#" -eq 2 ]
-	# Merge strategy that always uses the other tree, completely ignoring ours
-	h="$1" # HEAD
-	c="$2" # the actual merge commit
-	tree="$(git rev-parse "$c^{tree}")"
-	git read-tree --reset "$tree"
-	EOF
-	$ chmod 755 ~/bin/git-merge-theirs
-
-This strategy applied on the previous git example one could use a
-command like the following to merge the _opensuse_ branch into the
-current (in this case _factory_) branch:
-
-	$ git merge --allow-unrelated-histories -s theirs -m "merge devel branch" opensuse
-
-Alternatively it's also possible to 'artificially' generate a commit
-with the desired properties and advance the factory branch using low
-level git commands. This method would work if the _factory_ branch
-is not checked out:
+It's possible to simply generate such a commit and advance the
+factory branch using low level git commands. The _factory_ branch
+does not even need to be checked out to do that.
 
     $ git commit-tree -p factory -p opensuse -m "merge devel branch" $(git rev-parse "opensuse^{tree}")
     0852de2328a87546a60a19d2c99d0e9658f6a7a2
     $ git update-ref factory 0852de2328a87546a60a19d2c99d0e9658f6a7a2
 
-Both methods would produce a graph like this:
+So what the commad did was to create a commmit that has both the
+_factory_ and _opensuse_ branches as parent. The commit refers to
+the exact tree of the _opensuse_ branch. The _factory_ branch has to
+be specified as first parent. That way following the first parent in
+git log shows the package history. Descending into the second parent
+shows the development resp upstream history.
+
+So the method produces a graph like this:
 
 ![git4](git4.png)
 
