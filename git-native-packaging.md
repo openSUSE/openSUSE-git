@@ -307,10 +307,11 @@ it.
 #### Incorrect branches
 
 A naive _git branch_ of the _factory_ branch would yield the correct
-tree but not the correct chain of commits. No information is lost way but
-history may look confusing and will be hard to visualize. So in order to keep a
-linear history that resembles pristine source patches such a setup must
-be detected by tooling and prevented.
+tree but not the correct chain of commits. That would make it
+impossible to reuse package subdirectories including history in
+other projects. So in order to keep a linear history that resembles
+pristine source patches for a specific package such a setup must be
+detected by tooling and prevented.
 
 ![gitwrong](gitwrong.png)
 
