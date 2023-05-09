@@ -335,73 +335,45 @@ subdirectories, the commits in the project need to refer to trees
 that contain the packages in subdirectories.
 
 With this approach the whole history of all packages and their
-upstreams would be in one giant repository. When setting it up the
-right way using subtrees every package still keeps it's own history.
+upstreams would be in one giant repository. In this model it's
+possible to omit the _factory_ branch of the previous example.
+However, that would make it harder to track and check out individual
+packages. By using the _factory_ branch and subtrees every package
+still keeps it's own history easily trackable.
 
-There are two ways how a project could aggregate packages in this
-model. One way would be to aggregate a factory branch as described
-above. Another way would be to omit the per-package factory branch
-and directly merge into the project as it was done on package level
-before.
-
-Again a custom merge method could be used:
-
-	$ cat > ~/bin/git-merge-subdir <<EOF
-	#!/bin/bash -e
-	while [ "$1" != "--" ]; do
-		shift
-	done
-	shift
-	[ "$#" -eq 2 ]
-	# Merge strategy that always uses the other tree, completely ignoring ours
-	h="$1" # HEAD
-	c="$2" # the actual merge commit
-	: "${SUBDIR:?}"
-	treeref="$(git rev-parse "$c^{tree}")"
-	# replace existing subdir or add new one
-	makenewtree() {
-		local found=''
-		while read m t r d; do
-			if [ "$d" = "$SUBDIR" ]; then
-				r="$treeref"
-				found=1;
-			fi
-			echo -e "$m $t $r\t$d"
-		done < <(git cat-file -p HEAD^{tree})
-		[ -n "$found" ] || echo -e "040000 tree $treeref\t$SUBDIR"
-	}
-	newtreeref=$(makenewtree | git mktree)
-	git read-tree "$newtreeref"
-	EOF
-
-	$ chmod 755 ~/bin/git-merge-subdir
-
-### Merging the factory branch of packages into the project
+With two packages A and B the work flow would be
 
 	$ git fetch https://path/to/pkgA.git factory
-	$ SUBDIR=pkgA git merge --allow-unrelated-histories -s subdir FETCH_HEAD
+	$ git subtree -P pkgA add FETCH_HEAD
 	$ git fetch https://path/to/pkgB.git factory
-	$ SUBDIR=pkgB git merge --allow-unrelated-histories -s subdir FETCH_HEAD
+	$ git subtree -P pkgB add FETCH_HEAD
 
-With two packages A and B the history could look like this:
+Now the setup looks like this:
 
 ![project1](project1.png)
 
-### Merging the package directly into the project
+In order to update a package, the `git subtree` command can be used.
 
-It's also possible to omit the _factory_ branch in packages and just
-refer to the relevant commits themselves. That means the history of
-a package is not really preserved in the package specific repos but
-only in projects that use a package.
+	$ git fetch https://path/to/pkgA.git factory
+	$ git subtree -P pkgA merge FETCH_HEAD
 
-	$ git fetch https://path/to/pkgA.git opensuse
-	$ SUBDIR=pkgA git merge --allow-unrelated-histories -s subdir FETCH_HEAD
-	$ git fetch https://path/to/pkgB.git main
-	$ SUBDIR=pkgB git merge --allow-unrelated-histories -s subdir FETCH_HEAD
+The command uses a recursive merge strategy which bears the risk of
+merge conflicts in principle. As long as there are no local
+modifications done in the project (which would be bad anyway) there
+shouldn't be any though.
 
-The graph now looks a bit simpler:
+Using git plumbing commands, commits can also be created without
+involving any merge strategies:
 
-![project2](project2.png)
+    git fetch https://path/to/pkgA.git refs/heads/factory
+    git update-ref refs/heads/master $(
+        git commit-tree -m "add pkgA" -p master -p FETCH_HEAD $(
+            git cat-file -p master^{tree} | \
+                awk -v name=pkgA -v ref=FETCH_HEAD^{tree} \
+                    '$4==name{$3=ref;u=1}{print $1" "$2" "$3"\t"$4 }END{if(!u){print "040000 tree "ref"\t"name}}' | \
+                git mktree
+        )
+    )
 
 ### Submodule approach
 
