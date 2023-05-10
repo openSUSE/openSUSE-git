@@ -493,14 +493,14 @@ therefore work like the following:
 ![workflow2](workflow2.png)
 
 1. Create a pull request inside the package repo by copying the main ref into
-   e.g. `refs/requests/openSUSE:Factory/$number`. This needs support from
+   e.g. `refs/requests/openSUSE:Factory/$number/$package`. This needs support from
    the git hosting platform.
 2. the staging machinery notices the request and assign a staging
    project. The machinery creates an automatic, transient `factory`
-   branch. In this case `refs/staging/openSUSE:Factory:A`. This
-   commit could be signed to record reviews. Signing changes the commit hash
-   but that wouldn't matter in this case as the commit is automatically created
-   anyway.
+   branch. In this case `refs/staging/openSUSE:Factory:A/hello`. This
+   commit could be signed to record reviews. Signing does change the
+   commit hash but that wouldn't matter in this case as the commit
+   is automatically created anyway.
 3. To actually build all packages assigned to a particular staging
    project, the machinery also creates a transient branch of the
    target project. In this case in
@@ -514,7 +514,7 @@ into the target:
 ![workflow3](workflow3.png)
 
 1. Create or update the "factory" branch ie
-   `refs/projects/openSUSE:Factory` in the package
+   `refs/projects/openSUSE:Factory/hello` in the package
 2. Make `main` branch of the project point to the staging commit.
    If there are multiple staging projects to check in, a merge commit could be
    created. In that case the trees would have to be merged. That's rather
@@ -528,14 +528,6 @@ The goal is the target project pointing to the "factory" branch (ie
 `refs/projects/openSUSE:Factory`) in the package:
 
 ![workflow4](workflow4.png)
-
-## Further considerations
-
-It may make sense to include the package name in the project
-references. Ie something like
-`refs/projects/openSUSE:Factory/hello`. That would allow to keep
-history of the package in the same repo even if the package got
-renamed over time.
 
 # Addendum
 
