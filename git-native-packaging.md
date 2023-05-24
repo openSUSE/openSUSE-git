@@ -275,45 +275,22 @@ to conflicts. Factory however is not interested in resolving
 conflicts. All that's needed is the tree of the top commit in a
 submission.
 
-Git already has an _ours_ strategy built in that produces a merge
-commit that does not actually merge the other side but keeps
-referring to the current tree. What's basically needed from the
-point of view of the factory branch is a 'theirs' strategy that
-ignores the current tree and just refers to the one submitted.
-
-Such a strategy can be implemented as a small helper script:
-
-	$ cat > ~/bin/git-merge-theirs <<EOF
-	#!/bin/bash -e
-	while [ "$1" != "--" ]; do
-		shift
-	done
-	shift
-	[ "$#" -eq 2 ]
-	# Merge strategy that always uses the other tree, completely ignoring ours
-	h="$1" # HEAD
-	c="$2" # the actual merge commit
-	tree="$(git rev-parse "$c^{tree}")"
-	git read-tree --reset "$tree"
-	EOF
-	$ chmod 755 ~/bin/git-merge-theirs
-
-This strategy applied on the previous git example one could use a
-command like the following to merge the _opensuse_ branch into the
-current (in this case _factory_) branch:
-
-	$ git merge --allow-unrelated-histories -s theirs -m "merge devel branch" opensuse
-
-Alternatively it's also possible to 'artificially' generate a commit
-with the desired properties and advance the factory branch using low
-level git commands. This method would work if the _factory_ branch
-is not checked out:
+It's possible to simply generate such a commit and advance the
+factory branch using low level git commands. The _factory_ branch
+does not even need to be checked out to do that.
 
     $ git commit-tree -p factory -p opensuse -m "merge devel branch" $(git rev-parse "opensuse^{tree}")
     0852de2328a87546a60a19d2c99d0e9658f6a7a2
-    $ git update-ref factory 0852de2328a87546a60a19d2c99d0e9658f6a7a2
+    $ git update-ref refs/heads/factory 0852de2328a87546a60a19d2c99d0e9658f6a7a2
 
-Both methods would produce a graph like this:
+So what the commad did was to create a commmit that has both the
+_factory_ and _opensuse_ branches as parent. The commit refers to
+the exact tree of the _opensuse_ branch. The _factory_ branch has to
+be specified as first parent. That way following the first parent in
+git log shows the package history. Descending into the second parent
+shows the development resp upstream history.
+
+So the method produces a graph like this:
 
 ![git4](git4.png)
 
@@ -330,10 +307,11 @@ it.
 #### Incorrect branches
 
 A naive _git branch_ of the _factory_ branch would yield the correct
-tree but not the correct chain of commits. No information is lost way but
-history may look confusing and will be hard to visualize. So in order to keep a
-linear history that resembles pristine source patches such a setup must
-be detected by tooling and prevented.
+tree but not the correct chain of commits. That would make it
+impossible to reuse package subdirectories including history in
+other projects. So in order to keep a linear history that resembles
+pristine source patches for a specific package such a setup must be
+detected by tooling and prevented.
 
 ![gitwrong](gitwrong.png)
 
@@ -357,73 +335,45 @@ subdirectories, the commits in the project need to refer to trees
 that contain the packages in subdirectories.
 
 With this approach the whole history of all packages and their
-upstreams would be in one giant repository. When setting it up the
-right way using subtrees every package still keeps it's own history.
+upstreams would be in one giant repository. In this model it's
+possible to omit the _factory_ branch of the previous example.
+However, that would make it harder to track and check out individual
+packages. By using the _factory_ branch and subtrees every package
+still keeps it's own history easily trackable.
 
-There are two ways how a project could aggregate packages in this
-model. One way would be to aggregate a factory branch as described
-above. Another way would be to omit the per-package factory branch
-and directly merge into the project as it was done on package level
-before.
-
-Again a custom merge method could be used:
-
-	$ cat > ~/bin/git-merge-subdir <<EOF
-	#!/bin/bash -e
-	while [ "$1" != "--" ]; do
-		shift
-	done
-	shift
-	[ "$#" -eq 2 ]
-	# Merge strategy that always uses the other tree, completely ignoring ours
-	h="$1" # HEAD
-	c="$2" # the actual merge commit
-	: "${SUBDIR:?}"
-	treeref="$(git rev-parse "$c^{tree}")"
-	# replace existing subdir or add new one
-	makenewtree() {
-		local found=''
-		while read m t r d; do
-			if [ "$d" = "$SUBDIR" ]; then
-				r="$treeref"
-				found=1;
-			fi
-			echo -e "$m $t $r\t$d"
-		done < <(git cat-file -p HEAD^{tree})
-		[ -n "$found" ] || echo -e "040000 tree $treeref\t$SUBDIR"
-	}
-	newtreeref=$(makenewtree | git mktree)
-	git read-tree "$newtreeref"
-	EOF
-
-	$ chmod 755 ~/bin/git-merge-subdir
-
-### Merging the factory branch of packages into the project
+With two packages A and B the work flow would be
 
 	$ git fetch https://path/to/pkgA.git factory
-	$ SUBDIR=pkgA git merge --allow-unrelated-histories -s subdir FETCH_HEAD
+	$ git subtree -P pkgA add FETCH_HEAD
 	$ git fetch https://path/to/pkgB.git factory
-	$ SUBDIR=pkgB git merge --allow-unrelated-histories -s subdir FETCH_HEAD
+	$ git subtree -P pkgB add FETCH_HEAD
 
-With two packages A and B the history could look like this:
+Now the setup looks like this:
 
 ![project1](project1.png)
 
-### Merging the package directly into the project
+In order to update a package, the `git subtree` command can be used.
 
-It's also possible to omit the _factory_ branch in packages and just
-refer to the relevant commits themselves. That means the history of
-a package is not really preserved in the package specific repos but
-only in projects that use a package.
+	$ git fetch https://path/to/pkgA.git factory
+	$ git subtree -P pkgA merge FETCH_HEAD
 
-	$ git fetch https://path/to/pkgA.git opensuse
-	$ SUBDIR=pkgA git merge --allow-unrelated-histories -s subdir FETCH_HEAD
-	$ git fetch https://path/to/pkgB.git main
-	$ SUBDIR=pkgB git merge --allow-unrelated-histories -s subdir FETCH_HEAD
+The command uses a recursive merge strategy which bears the risk of
+merge conflicts in principle. As long as there are no local
+modifications done in the project (which would be bad anyway) there
+shouldn't be any though.
 
-The graph now looks a bit simpler:
+Using git plumbing commands, commits can also be created without
+involving any merge strategies:
 
-![project2](project2.png)
+    git fetch https://path/to/pkgA.git refs/heads/factory
+    git update-ref refs/heads/master $(
+        git commit-tree -m "add pkgA" -p master -p FETCH_HEAD $(
+            git cat-file -p master^{tree} | \
+                awk -v name=pkgA -v ref=FETCH_HEAD^{tree} \
+                    '$4==name{$3=ref;u=1}{print $1" "$2" "$3"\t"$4 }END{if(!u){print "040000 tree "ref"\t"name}}' | \
+                git mktree
+        )
+    )
 
 ### Submodule approach
 
@@ -543,14 +493,14 @@ therefore work like the following:
 ![workflow2](workflow2.png)
 
 1. Create a pull request inside the package repo by copying the main ref into
-   e.g. `refs/requests/openSUSE:Factory/$number`. This needs support from
+   e.g. `refs/requests/openSUSE:Factory/$number/$package`. This needs support from
    the git hosting platform.
 2. the staging machinery notices the request and assign a staging
    project. The machinery creates an automatic, transient `factory`
-   branch. In this case `refs/staging/openSUSE:Factory:A`. This
-   commit could be signed to record reviews. Signing changes the commit hash
-   but that wouldn't matter in this case as the commit is automatically created
-   anyway.
+   branch. In this case `refs/staging/openSUSE:Factory:A/hello`. This
+   commit could be signed to record reviews. Signing does change the
+   commit hash but that wouldn't matter in this case as the commit
+   is automatically created anyway.
 3. To actually build all packages assigned to a particular staging
    project, the machinery also creates a transient branch of the
    target project. In this case in
@@ -564,7 +514,7 @@ into the target:
 ![workflow3](workflow3.png)
 
 1. Create or update the "factory" branch ie
-   `refs/projects/openSUSE:Factory` in the package
+   `refs/projects/openSUSE:Factory/hello` in the package
 2. Make `main` branch of the project point to the staging commit.
    If there are multiple staging projects to check in, a merge commit could be
    created. In that case the trees would have to be merged. That's rather
@@ -578,14 +528,6 @@ The goal is the target project pointing to the "factory" branch (ie
 `refs/projects/openSUSE:Factory`) in the package:
 
 ![workflow4](workflow4.png)
-
-## Further considerations
-
-It may make sense to include the package name in the project
-references. Ie something like
-`refs/projects/openSUSE:Factory/hello`. That would allow to keep
-history of the package in the same repo even if the package got
-renamed over time.
 
 # Addendum
 
