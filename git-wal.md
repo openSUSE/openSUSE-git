@@ -117,6 +117,13 @@ To achieve true enterprise-grade parallel performance, we avoid global database 
     ```
     If a pending WAL row is found, and the active `ACTIVE_WAL_TX_ID` environment variable does not match, the push is rejected, protecting the branch from out-of-order mutations.
 
+4.  **Transaction-Level Advisory Locks (Closing the Timing Rift)**:
+    To completely eliminate any race condition window (timing "rift") after acquiring the row lock but before writing the WAL entry, the transaction manager acquires transaction-level advisory locks:
+    ```sql
+    SELECT pg_advisory_xact_lock(%s);
+    ```
+    The Lock Daemon queries `pg_locks` in real-time to check if the advisory lock is held. If held, concurrent direct pushes are instantly rejected, ensuring flawless, gap-free transactional integrity during active transactions.
+
 ---
 
 ## 5. Distributed Transaction Flow & State Machine

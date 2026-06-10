@@ -32,6 +32,45 @@ import socket
 import threading
 import pwd
 import time
+import hashlib
+
+
+def get_repo_lock_id(repo_name: str) -> int:
+    """
+    Generates a stable, unique 64-bit signed integer for a repository name
+    to be used with PostgreSQL advisory locks.
+
+    Args:
+        repo_name (str): The name of the SCM repository.
+
+    Returns:
+        int: A signed 64-bit integer hash of the repository name.
+    """
+    h = hashlib.sha256(repo_name.encode('utf-8')).digest()
+    return int.from_bytes(h[:8], byteorder='big', signed=True)
+
+
+def split_64bit_to_32bit(val: int):
+    """
+    Splits a 64-bit signed integer into two 32-bit signed integers,
+    matching how PostgreSQL splits a 64-bit advisory lock key in the pg_locks table.
+
+    Args:
+        val (int): The 64-bit signed integer.
+
+    Returns:
+        tuple: A tuple containing (classid, objid) as signed 32-bit integers.
+    """
+    val_unsigned = val & 0xffffffffffffffff
+    classid = (val_unsigned >> 32) & 0xffffffff
+    objid = val_unsigned & 0xffffffff
+
+    if classid >= 0x80000000:
+        classid -= 0x100000000
+    if objid >= 0x80000000:
+        objid -= 0x100000000
+    return classid, objid
+
 
 # Define base paths relative to the script location
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -353,16 +392,27 @@ def run_lock_daemon():
                 repo_name, active_tx_str = data.split(":")
                 active_tx_id = int(active_tx_str) if active_tx_str != "None" else None
                 
-                # Query PostgreSQL for active logical locks
                 c = get_db_cursor()
+
+                # Fencing token check: verify that our active transaction is still 'pending' in WAL.
+                # If a concurrent process has already healed and aborted/committed it, we must reject this push.
+                if active_tx_id is not None:
+                    c.execute("SELECT state FROM wal WHERE tx_id = %s", (active_tx_id,))
+                    tx_state_row = c.fetchone()
+                    if not tx_state_row or to_str(tx_state_row[0]) != 'pending':
+                        client_sock.sendall(b"locked\n")
+                        continue
+
+                # Query PostgreSQL for active logical locks
                 c.execute("""
                     SELECT wal.tx_id FROM wal
                     JOIN wal_entries ON wal.tx_id = wal_entries.tx_id
                     WHERE wal_entries.repo = %s AND wal.state = 'pending'
+                    ORDER BY wal.tx_id ASC
                     LIMIT 1
                 """, (repo_name,))
                 row = c.fetchone()
-                
+
                 if row:
                     locked_tx_id = row[0]
                     # Block if it's locked by another transaction, allow if it's our own
@@ -371,7 +421,68 @@ def run_lock_daemon():
                     else:
                         client_sock.sendall(b"allow\n")
                 else:
-                    client_sock.sendall(b"allow\n")
+                    # Check if there are any COMMITTED but PHYSICALLY INCOMPLETE transactions for this repo.
+                    # We check if the staged ref f"refs/wal/tx_{tx_id}/main" exists in SCM.
+                    c.execute("""
+                        SELECT DISTINCT wal.tx_id FROM wal
+                        JOIN wal_entries ON wal.tx_id = wal_entries.tx_id
+                        WHERE wal_entries.repo = %s AND wal.state = 'committed'
+                        ORDER BY wal.tx_id DESC
+                        LIMIT 10
+                    """, (repo_name,))
+                    committed_rows = c.fetchall()
+                    
+                    is_incomplete = False
+                    repo_path = os.path.join(BASE_DIR, repo_name)
+                    for (tx_id,) in committed_rows:
+                        staged_ref = f"refs/wal/tx_{tx_id}/main"
+                        res = subprocess.run(["git", "rev-parse", staged_ref], cwd=repo_path, capture_output=True, text=True)
+                        if res.returncode == 0:
+                            is_incomplete = True
+                            break
+                            
+                    if is_incomplete:
+                        client_sock.sendall(b"locked\n")
+                    else:
+                        # Double-check for active transaction-level advisory locks (closing the rift window)
+                        lock_id = get_repo_lock_id(repo_name)
+                    classid, objid = split_64bit_to_32bit(lock_id)
+                    c.execute("""
+                        SELECT 1 FROM pg_locks
+                        WHERE locktype = 'advisory'
+                        AND classid = %s::oid
+                        AND objid = %s::oid
+                        LIMIT 1
+                    """, (classid, objid))
+                    has_lock = c.fetchone()
+                    if has_lock:
+                        # Advisory lock is held (rift window is active), reject concurrent pushes
+                        client_sock.sendall(b"locked\n")
+                    else:
+                        if active_tx_id is not None:
+                            # Coordinated push: already owns transaction locks, just allow
+                            client_sock.sendall(b"allow\n")
+                        else:
+                            # Direct developer push: acquire a temporary push lease lock (5 seconds)
+                            # to protect the pre-receive gap from concurrent transactions.
+                            try:
+                                temp_conn = psycopg.connect(f"host=/tmp port={PG_PORT} dbname=postgres user={PG_USER}", autocommit=True)
+                                temp_c = temp_conn.cursor()
+                                temp_c.execute("SELECT pg_try_advisory_lock(%s)", (lock_id,))
+                                acquired = temp_c.fetchone()[0]
+                                if acquired:
+                                    client_sock.sendall(b"allow\n")
+                                    # Schedule release of this lock after 5 seconds by closing the connection
+                                    def release_lock(conn_to_close):
+                                        time.sleep(5.0)
+                                        try: conn_to_close.close()
+                                        except: pass
+                                    threading.Thread(target=release_lock, args=(temp_conn,), daemon=True).start()
+                                else:
+                                    temp_conn.close()
+                                    client_sock.sendall(b"locked\n")
+                            except Exception as e:
+                                client_sock.sendall(f"error:Failed to acquire temporary lock: {e}\n".encode('utf-8'))
                     
             except Exception as e:
                 try: client_sock.sendall(f"error:{e}\n".encode('utf-8'))
@@ -419,6 +530,8 @@ def setup_environment():
             post_sha TEXT
         );
     """)
+    c.execute("CREATE INDEX idx_wal_entries_repo ON wal_entries(repo);")
+    c.execute("CREATE INDEX idx_wal_entries_tx_id ON wal_entries(tx_id);")
     conn.commit()
     conn.close()
 
@@ -461,23 +574,29 @@ if repo_name.endswith('.git'):
 
 # 1. Repo-Specific Branch Locking Check (Daemon UNIX socket client)
 socket_path = "/tmp/wal_lock.sock"
-if os.path.exists(socket_path):
-    try:
-        client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        client.connect(socket_path)
-        active_tx_id = os.environ.get("ACTIVE_WAL_TX_ID", "None")
-        
-        # Request format: "repo_name:active_tx_id"
-        message = repo_name + ":" + active_tx_id
-        client.sendall(message.encode('utf-8'))
-        response = client.recv(1024).decode('utf-8').strip()
-        client.close()
-        
-        if response == "locked":
-            sys.stderr.write("Push rejected: " + repo_name + " is currently locked due to a pending transaction.\\n")
-            sys.exit(1)
-    except Exception as e:
-        sys.stderr.write("Warning: Lock Daemon connection failed: " + str(e) + "\\n")
+try:
+    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    client.connect(socket_path)
+    active_tx_id = os.environ.get("ACTIVE_WAL_TX_ID", "None")
+    
+    # Request format: "repo_name:active_tx_id"
+    message = repo_name + ":" + active_tx_id
+    client.sendall(message.encode('utf-8'))
+    response = client.recv(1024).decode('utf-8').strip()
+    client.close()
+    
+    if response == "locked":
+        sys.stderr.write("Push rejected: " + repo_name + " is currently locked due to a pending transaction.\\n")
+        sys.exit(1)
+    elif response.startswith("error:"):
+        sys.stderr.write("Push rejected: Lock Daemon error: " + response + "\\n")
+        sys.exit(1)
+    elif response != "allow":
+        sys.stderr.write("Push rejected: Unknown Lock Daemon response: " + response + "\\n")
+        sys.exit(1)
+except Exception as e:
+    sys.stderr.write("Push rejected: Lock Daemon connection failed or offline: " + str(e) + "\\n")
+    sys.exit(1)
 
 # 2. Failure Emulation for repo2-broken
 if "repo2-broken" in pwd and os.path.exists(TRIGGER_PATH):
@@ -518,8 +637,10 @@ sys.exit(0)
     run_cmd(["git", "branch", "-M", "main"], cwd=LOCAL_DIR)
 
     # Push initial commit to all remotes to establish the 'main' branch
+    setup_env = os.environ.copy()
+    setup_env["DISABLE_WAL_LOCKS"] = "1"
     for repo in ALL_REPOS:
-        run_cmd(["git", "push", repo, "main:main"], cwd=LOCAL_DIR)
+        run_cmd(["git", "push", repo, "main:main"], cwd=LOCAL_DIR, env=setup_env)
 
     # 5. Populate the initial database state with the actual Git commit SHAs
     conn = psycopg.connect(f"host=/tmp port={PG_PORT} dbname=postgres user={PG_USER}")
@@ -562,93 +683,245 @@ class SystemManager:
         repo_path = os.path.join(BASE_DIR, repo_name)
         return run_cmd(["git", "rev-parse", "main"], cwd=repo_path).stdout.strip()
 
-    def update_git_ref(self, repo_name: str, sha: str):
+    def update_git_ref(self, repo_name: str, sha: str, ref_name: str = "refs/heads/main", old_sha: str = None):
         """
-        Force-updates the 'main' branch of a repository to a specific SHA.
-        Used strictly during rollback/healing procedures.
+        Force-updates a branch/reference of a repository to a specific SHA.
 
         Args:
             repo_name (str): The name of the repository.
             sha (str): The target SHA to point 'main' to.
+            ref_name (str): The target reference to update.
+            old_sha (str, optional): The expected previous SHA for atomic verification.
         """
         repo_path = os.path.join(BASE_DIR, repo_name)
-        run_cmd(["git", "update-ref", "refs/heads/main", sha], cwd=repo_path)
+        cmd = ["git", "update-ref", ref_name, sha]
+        if old_sha:
+            cmd.append(old_sha)
+        run_cmd(cmd, cwd=repo_path)
+
+    def delete_git_ref(self, repo_name: str, ref_name: str):
+        """
+        Deletes a specific reference from the repository.
+        """
+        repo_path = os.path.join(BASE_DIR, repo_name)
+        run_cmd(["git", "update-ref", "-d", ref_name], cwd=repo_path, check=False)
+
+    def get_git_ref_sha(self, repo_name: str, ref_name: str) -> str:
+        """
+        Returns the SHA of a specific reference, or None if it does not exist.
+        """
+        repo_path = os.path.join(BASE_DIR, repo_name)
+        res = run_cmd(["git", "rev-parse", ref_name], cwd=repo_path, check=False)
+        if res.returncode == 0:
+            return res.stdout.strip()
+        return None
 
     def get_conflicting_pending_transactions(self, target_repos: list[str]) -> list[int]:
         """
-        Queries the database for any pending transaction ID that touches the target repos.
+        Queries the database for any pending transaction ID that touches the target repos,
+        as well as any recently committed transactions that have not yet been fully physically applied.
         """
         conn = psycopg.connect(f"host=/tmp port={PG_PORT} dbname=postgres user={PG_USER}")
         c = conn.cursor()
         try:
+            # 1. Get all pending transactions
             c.execute("""
                 SELECT DISTINCT wal.tx_id FROM wal
                 JOIN wal_entries ON wal.tx_id = wal_entries.tx_id
                 WHERE wal_entries.repo = ANY(%s) AND wal.state = 'pending'
             """, (target_repos,))
-            return [row[0] for row in c.fetchall()]
+            pending_txs = [row[0] for row in c.fetchall()]
+
+            # 2. Get recently committed transactions that might be physically incomplete.
+            # We look at the last 100 transactions to keep this check bounded and extremely fast.
+            c.execute("""
+                SELECT DISTINCT wal.tx_id FROM wal
+                JOIN wal_entries ON wal.tx_id = wal_entries.tx_id
+                WHERE wal_entries.repo = ANY(%s) AND wal.state = 'committed'
+                ORDER BY wal.tx_id DESC
+                LIMIT 100
+            """, (target_repos,))
+            committed_txs = [row[0] for row in c.fetchall()]
+
+            incomplete_committed = []
+            for tx_id in committed_txs:
+                c.execute("SELECT repo, post_sha FROM wal_entries WHERE tx_id = %s", (tx_id,))
+                entries = c.fetchall()
+                for repo, post_sha in entries:
+                    repo_str = to_str(repo)
+                    post_sha_str = to_str(post_sha)
+                    staged_ref = f"refs/wal/tx_{tx_id}/main"
+                    staged_sha = self.get_git_ref_sha(repo_str, staged_ref)
+                    current_sha = self.get_git_sha(repo_str)
+                    
+                    # If the staged reference still exists, or the main branch has not reached post_sha,
+                    # this committed transaction is physically incomplete.
+                    if staged_sha is not None or (current_sha != post_sha_str and not self.is_ancestor(repo_str, post_sha_str, current_sha)):
+                        incomplete_committed.append(tx_id)
+                        break
+
+            return sorted(list(set(pending_txs + incomplete_committed)))
         finally:
             conn.close()
 
-    def heal_transaction(self, tx_id: int):
+    def is_ancestor(self, repo_name: str, ancestor_sha: str, descendant_sha: str) -> bool:
         """
-        Heals a specific pending transaction by ID:
-        - If all its Git repos are at post_sha, rolls forward the DB state.
-        - Otherwise, rolls back all its Git repos to pre_sha.
+        Checks if ancestor_sha is an ancestor of (or equal to) descendant_sha in the given SCM repo.
+
+        Args:
+            repo_name (str): The name of the repository.
+            ancestor_sha (str): The target SHA that should be an ancestor.
+            descendant_sha (str): The descendant SHA.
+
+        Returns:
+            bool: True if ancestor_sha is an ancestor of (or equal to) descendant_sha, False otherwise.
+        """
+        repo_path = os.path.join(BASE_DIR, repo_name)
+        # git merge-base --is-ancestor returns 0 if true, 1 if false
+        res = run_cmd(["git", "merge-base", "--is-ancestor", ancestor_sha, descendant_sha], cwd=repo_path, check=False)
+        return res.returncode == 0
+
+    def heal_transaction(self, tx_id: int, cursor=None):
+        """
+        Heals a specific pending or incomplete committed transaction by ID:
+        - If the state is 'pending':
+            - If all its Git repos are at post_sha (or have moved past it), rolls forward the DB state to 'committed'.
+            - Otherwise, rolls back all its Git repos to pre_sha and sets DB state to 'aborted'.
+        - If the state is 'committed':
+            - Ensures all physical Git repos are fast-forwarded to post_sha and cleans up staged refs (roll forward).
 
         Args:
             tx_id (int): The transaction ID to heal.
+            cursor: Optional active cursor to reuse the current transaction.
         """
-        conn = psycopg.connect(f"host=/tmp port={PG_PORT} dbname=postgres user={PG_USER}")
-        c = conn.cursor()
+        if cursor is not None:
+            c = cursor
+            conn = None
+        else:
+            conn = psycopg.connect(f"host=/tmp port={PG_PORT} dbname=postgres user={PG_USER}")
+            c = conn.cursor()
 
         try:
             # Lock the transaction log row exclusively during healing
             c.execute("SELECT state FROM wal WHERE tx_id = %s FOR UPDATE", (tx_id,))
             row = c.fetchone()
-            if not row or to_str(row[0]) != 'pending':
+            if not row:
+                return
+            
+            tx_state = to_str(row[0])
+            if tx_state not in ('pending', 'committed'):
                 return
 
-            print(f"\n[Heal] Healing pending WAL transaction {tx_id}...")
+            print(f"\n[Heal] Healing WAL transaction {tx_id} (state: {tx_state})...")
             c.execute("SELECT repo, pre_sha, post_sha FROM wal_entries WHERE tx_id = %s", (tx_id,))
             entries = c.fetchall()
 
-            # Determine whether to roll-forward or roll-back based on SCM states
+            # Acquire row locks and advisory locks on these repositories to prevent any concurrent modifications during healing
+            # Sort repos_to_lock and acquire advisory locks first to prevent deadlocks and close the timing rift window
+            repos_to_lock = sorted(list(set(to_str(r[0]) for r in entries)))
+            if repos_to_lock:
+                for repo in repos_to_lock:
+                    c.execute("SELECT pg_advisory_xact_lock(%s)", (get_repo_lock_id(repo),))
+                c.execute("SELECT repo FROM state WHERE repo = ANY(%s) FOR UPDATE", (repos_to_lock,))
+
+            if tx_state == 'committed':
+                # Roll-forward: apply physical fast-forwards and clean up staged references
+                for repo, pre_sha, post_sha in entries:
+                    repo_str = to_str(repo)
+                    pre_sha_str = to_str(pre_sha)
+                    post_sha_str = to_str(post_sha)
+                    staged_ref = f"refs/wal/tx_{tx_id}/main"
+                    
+                    # Update physical branch to post_sha
+                    current_sha = self.get_git_sha(repo_str)
+                    if current_sha != post_sha_str and not self.is_ancestor(repo_str, post_sha_str, current_sha):
+                        print(f"[Heal]   Fast-forwarding physical {repo_str} to post_sha ({post_sha_str[:8]})")
+                        self.update_git_ref(repo_str, post_sha_str, old_sha=pre_sha_str)
+                    
+                    # Delete staged ref
+                    self.delete_git_ref(repo_str, staged_ref)
+                print(f"[Heal] Transaction {tx_id} physical roll-forward completed.")
+                if conn is not None:
+                    conn.commit()
+                return
+
+            # Determine whether to roll-forward or roll-back based on SCM states (using staged refs)
             all_successful = True
             for repo, pre_sha, post_sha in entries:
-                current_sha = self.get_git_sha(to_str(repo))
-                if current_sha != to_str(post_sha):
+                repo_str = to_str(repo)
+                pre_sha_str = to_str(pre_sha)
+                post_sha_str = to_str(post_sha)
+                if pre_sha_str is None or post_sha_str is None:
+                    # If any entry is missing its tracking SHAs, the transaction could not
+                    # have reached physical completion and must be rolled back.
+                    all_successful = False
+                    break
+                
+                # Check if the staged reference exists and points to post_sha
+                staged_ref = f"refs/wal/tx_{tx_id}/main"
+                staged_sha = self.get_git_ref_sha(repo_str, staged_ref)
+                
+                # Check if the main branch itself has already been updated to or past post_sha
+                current_sha = self.get_git_sha(repo_str)
+                
+                # If neither the staged reference nor the main branch is at/past post_sha, it's incomplete
+                if staged_sha != post_sha_str and current_sha != post_sha_str and not self.is_ancestor(repo_str, post_sha_str, current_sha):
                     all_successful = False
                     break
 
             if all_successful:
-                print(f"[Heal] Transaction {tx_id} succeeded in Git. Rolling forward database...")
+                print(f"[Heal] Transaction {tx_id} succeeded in Git (or fast-forwarded). Rolling forward database...")
                 for repo, pre_sha, post_sha in entries:
                     c.execute("UPDATE state SET sha = %s WHERE repo = %s", (to_str(post_sha), to_str(repo)))
                 c.execute("UPDATE wal SET state = 'committed' WHERE tx_id = %s", (tx_id,))
                 print(f"[Heal] Transaction {tx_id} successfully COMMITTED.")
+
+                # Fast-forward main and delete staged refs
+                for repo, pre_sha, post_sha in entries:
+                    repo_str = to_str(repo)
+                    pre_sha_str = to_str(pre_sha)
+                    post_sha_str = to_str(post_sha)
+                    staged_ref = f"refs/wal/tx_{tx_id}/main"
+                    staged_sha = self.get_git_ref_sha(repo_str, staged_ref)
+                    if staged_sha == post_sha_str:
+                        current_sha = self.get_git_sha(repo_str)
+                        if current_sha != post_sha_str and not self.is_ancestor(repo_str, post_sha_str, current_sha):
+                            print(f"[Heal]   Fast-forwarding physical {repo_str} to staged ref ({staged_sha[:8]})")
+                            self.update_git_ref(repo_str, post_sha_str, old_sha=pre_sha_str)
+                    self.delete_git_ref(repo_str, staged_ref)
             else:
                 print(f"[Heal] Transaction {tx_id} was incomplete. Rolling back Git repos...")
                 for repo, pre_sha, post_sha in entries:
-                    current_sha = self.get_git_sha(to_str(repo))
-                    if current_sha != to_str(pre_sha):
-                        print(f"[Heal]   Resetting {to_str(repo)} from {current_sha[:8]} to {to_str(pre_sha)[:8]}")
-                        self.update_git_ref(to_str(repo), to_str(pre_sha))
-                    c.execute("UPDATE state SET sha = %s WHERE repo = %s", (to_str(pre_sha), to_str(repo)))
+                    repo_str = to_str(repo)
+                    staged_ref = f"refs/wal/tx_{tx_id}/main"
+                    self.delete_git_ref(repo_str, staged_ref)
+                    
+                    # Ensure database points back to pre_sha (safely syncing any state mismatch)
+                    pre_sha_str = to_str(pre_sha)
+                    if pre_sha_str:
+                        c.execute("UPDATE state SET sha = %s WHERE repo = %s", (pre_sha_str, repo_str))
+                
                 c.execute("UPDATE wal SET state = 'aborted' WHERE tx_id = %s", (tx_id,))
                 print(f"[Heal] Transaction {tx_id} successfully ABORTED.")
-            conn.commit()
+            
+            if conn is not None:
+                conn.commit()
         except Exception as e:
-            conn.rollback()
+            if conn is not None:
+                conn.rollback()
             print(f"[Heal] Error healing transaction {tx_id}: {e}")
+            raise e
         finally:
-            conn.close()
+            if conn is not None:
+                conn.close()
 
     def do_atomic_push(self, target_repos: list[str], commit_msg: str, simulate_crash: bool = False) -> bool:
         """
         Executes a distributed atomic push transaction targeting specific repositories.
-        Implements row-level logical SELECT FOR UPDATE by querying and healing ONLY
-        conflicting pending transactions on our target repositories.
+        Implements row-level logical SELECT FOR UPDATE by holding the database row locks
+        open during the physical Git push phase. This guarantees 100% thread safety,
+        prevents any concurrent modifications to overlapping repositories, and ensures
+        reliable crash safety.
 
         Args:
             target_repos (list): List of repository names to push to.
@@ -658,23 +931,55 @@ class SystemManager:
         Returns:
             bool: True if transaction committed successfully, False otherwise.
         """
-        # Resolve any conflicting SCM transactions BEFORE we start our own transaction context.
-        # This completely avoids database row lock deadlocks by keeping queries linear and non-overlapping!
-        conflicting_txs = self.get_conflicting_pending_transactions(target_repos)
-        for tx_id in conflicting_txs:
-            print(f"[Push] Conflicting pending transaction {tx_id} detected. Resolving it...")
-            self.heal_transaction(tx_id)
-
         # Create new connection context for this distributed transaction
         conn = psycopg.connect(f"host=/tmp port={PG_PORT} dbname=postgres user={PG_USER}")
         conn.autocommit = False  # Explicit manual transaction
         c = conn.cursor()
+        db_committed = False
 
         try:
-            # 1. Acquire native PostgreSQL row-level locks on state table (SELECT FOR UPDATE)
-            # This exclusively locks ONLY the targeted repository rows, leaving unrelated ones unblocked!
+            # Sort target_repos and ensure unique elements to avoid deadlocks and redundant locking
+            target_repos = sorted(list(set(target_repos)))
+
+            # 1. Acquire transaction-level advisory locks first (closing the rift window completely)
+            for repo in target_repos:
+                c.execute("SELECT pg_advisory_xact_lock(%s)", (get_repo_lock_id(repo),))
+
+            # 2. Acquire native PostgreSQL row-level locks on state table (SELECT FOR UPDATE)
+            # This exclusively locks ONLY the targeted repository rows, leaving unrelated ones unblocked.
+            # Concurrent transactions targeting overlapping repositories will naturally block here
+            # until this transaction commits or aborts.
             print(f"\n[Push] Acquiring native row-level locks (SELECT FOR UPDATE) on target rows: {target_repos}...")
             c.execute("SELECT repo FROM state WHERE repo = ANY(%s) FOR UPDATE", (target_repos,))
+
+            # 3. Check for any crashed pending transactions on these repositories.
+            # Since we hold the row lock now, we are guaranteed that any active transaction has finished.
+            # If we find any pending WAL entries here, they MUST be from a crashed process, so we heal them.
+            # To completely eliminate database deadlocks, we release our held locks (roll back) before
+            # healing on separate connections, then re-acquire them cleanly.
+            while True:
+                conflicting_txs = self.get_conflicting_pending_transactions(target_repos)
+                if not conflicting_txs:
+                    break
+
+                print(f"[Push] Crashed pending transactions detected {conflicting_txs}. Releasing our locks to heal cleanly...")
+                conn.rollback()
+
+                for conflicting_id in conflicting_txs:
+                    print(f"[Push] Healing crashed transaction {conflicting_id} on separate connection...")
+                    self.heal_transaction(conflicting_id)
+
+                print("[Push] Re-acquiring locks on target rows (advisory first, then row-level)...")
+                for repo in target_repos:
+                    c.execute("SELECT pg_advisory_xact_lock(%s)", (get_repo_lock_id(repo),))
+                c.execute("SELECT repo FROM state WHERE repo = ANY(%s) FOR UPDATE", (target_repos,))
+
+            # Record initial SCM SHAs for physical rollback in case of push failures.
+            pre_shas = {repo: self.get_git_sha(repo) for repo in target_repos}
+
+            # Synchronize local_workspace with latest target remote HEADs to preserve any concurrent direct pushes
+            for repo in target_repos:
+                run_cmd(["git", "pull", repo, "main", "--rebase"], cwd=LOCAL_DIR, check=False)
 
             print(f"[Push] Starting distributed transaction targeting {target_repos} for commit: '{commit_msg}'")
 
@@ -685,21 +990,18 @@ class SystemManager:
             run_cmd(["git", "commit", "-m", commit_msg], cwd=LOCAL_DIR)
             new_sha = self.get_git_sha("local_workspace")
 
-            # 2. Write WAL pending record
-            c.execute("INSERT INTO wal (state) VALUES ('pending') RETURNING tx_id")
-            tx_id = c.fetchone()[0]
+            # 3. Create a persistent WAL entry via a separate, short-lived database connection.
+            # This establishes the logical lock at the Lock Daemon BEFORE we perform physical pushes.
+            # Populating both pre_shas and post_sha atomically avoids the mid-rift NULL crash window completely.
+            with psycopg.connect(f"host=/tmp port={PG_PORT} dbname=postgres user={PG_USER}") as conn_wal:
+                with conn_wal.cursor() as c_wal:
+                    c_wal.execute("INSERT INTO wal (state) VALUES ('pending') RETURNING tx_id")
+                    tx_id = c_wal.fetchone()[0]
+                    for repo in target_repos:
+                        c_wal.execute("INSERT INTO wal_entries (tx_id, repo, pre_sha, post_sha) VALUES (%s, %s, %s, %s)",
+                                      (tx_id, repo, pre_shas[repo], new_sha))
 
-            for repo in target_repos:
-                pre_sha = self.get_git_sha(repo)
-                c.execute("INSERT INTO wal_entries (tx_id, repo, pre_sha, post_sha) VALUES (%s, %s, %s, %s)",
-                          (tx_id, repo, pre_sha, new_sha))
-
-            # COMMIT the transaction to release database-level locks BEFORE performing Git pushes.
-            # This allows other unrelated transactions to write to PostgreSQL concurrently.
-            conn.commit()
-            print(f"[Push] WAL record {tx_id} committed as 'pending'. Database locks fully released.")
-
-            # 3. Perform pushes to target remotes
+            # 4. Perform pushes to target remotes (staging first)
             success = True
             env = os.environ.copy()
             # Pass our active WAL transaction ID to bypass self-locking in pre-receive hook
@@ -707,33 +1009,90 @@ class SystemManager:
 
             for repo in target_repos:
                 print(f"[Push]   Pushing to {repo}...")
-                res = run_cmd(["git", "push", repo, "main:main"], cwd=LOCAL_DIR, env=env, check=False)
+                staged_ref = f"refs/wal/tx_{tx_id}/main"
+                res = run_cmd(["git", "push", repo, f"main:{staged_ref}"], cwd=LOCAL_DIR, env=env, check=False)
                 if res.returncode != 0:
                     print(f"[Push]   CRITICAL: Push to {repo} failed! (Hook output: {res.stderr.strip()})")
                     success = False
                     break
 
+            # 4b. Verify ancestry/fast-forward safety on all target remote SCM repos
+            if success:
+                for repo in target_repos:
+                    pre_sha = pre_shas[repo]
+                    # We check if pre_sha is an ancestor of new_sha in the remote repo.
+                    # This prevents silent non-fast-forward overwrites of other developers' work.
+                    if not self.is_ancestor(repo, pre_sha, new_sha):
+                        print(f"[Push]   CRITICAL: Push to {repo} is not a fast-forward! Overwrite/Data loss risk detected.")
+                        success = False
+                        break
+
             if not success:
                 print("[Push] Push failed. Initiating abort rollback...")
-                self.heal_transaction(tx_id)
+                # Delete staged refs
+                for repo in target_repos:
+                    staged_ref = f"refs/wal/tx_{tx_id}/main"
+                    self.delete_git_ref(repo, staged_ref)
+
+                # Mark WAL record as aborted and release locks atomically via Connection 1 (conn)
+                c.execute("UPDATE wal SET state = 'aborted' WHERE tx_id = %s", (tx_id,))
+                conn.commit()
                 return False
 
             if simulate_crash:
                 raise RuntimeError("CRASH SIMULATION: System interrupted right after successful pushes!")
 
-            # 4. Success path: commit state to target DB table and mark WAL committed
-            # Open a quick transaction to finalize
-            c.execute("BEGIN")
+            # 5. Success path: commit state to target DB table and mark WAL committed.
+            # This is done on Connection 1 (conn) so the locks are held until final commit completes.
             for repo in target_repos:
                 c.execute("UPDATE state SET sha = %s WHERE repo = %s", (new_sha, repo))
             c.execute("UPDATE wal SET state = 'committed' WHERE tx_id = %s", (tx_id,))
             conn.commit()
+            db_committed = True
+
+            # Now update SCM refs to main and delete staged refs
+            for repo in target_repos:
+                staged_ref = f"refs/wal/tx_{tx_id}/main"
+                print(f"[Push]   Fast-forwarding physical {repo} to {new_sha[:8]}...")
+                self.update_git_ref(repo, new_sha, old_sha=pre_shas[repo])
+                self.delete_git_ref(repo, staged_ref)
+
             print("[Push] Transaction committed successfully!")
             return True
 
         except Exception as e:
-            conn.rollback()
             print(f"[Push] Interrupted/Failed: {e}")
+            if db_committed:
+                print(f"[Push] SCM update failed, but DB transaction is committed. SCM will be rolled forward by healing on the next run.")
+                try: conn.rollback()
+                except: pass
+                return False
+
+            if "CRASH SIMULATION" in str(e):
+                # For simulated crashes, we roll back DB transaction immediately to release locks,
+                # mimicking a process crash where the connection is severed.
+                conn.rollback()
+            else:
+                if 'tx_id' in locals():
+                    # Delete staged refs
+                    for repo in target_repos:
+                        staged_ref = f"refs/wal/tx_{tx_id}/main"
+                        self.delete_git_ref(repo, staged_ref)
+                    # Mark WAL record as aborted and release locks atomically via Connection 1 (conn)
+                    try:
+                        c.execute("UPDATE wal SET state = 'aborted' WHERE tx_id = %s", (tx_id,))
+                        conn.commit()
+                    except Exception as ex:
+                        print(f"[Push] Failed to update WAL state on active connection: {ex}")
+                        conn.rollback()
+                        try:
+                            with psycopg.connect(f"host=/tmp port={PG_PORT} dbname=postgres user={PG_USER}") as conn_wal:
+                                with conn_wal.cursor() as c_wal:
+                                    c_wal.execute("UPDATE wal SET state = 'aborted' WHERE tx_id = %s", (tx_id,))
+                        except Exception as ex2:
+                            print(f"[Push] Failed to update WAL state on fallback connection: {ex2}")
+                else:
+                    conn.rollback()
             return False
         finally:
             conn.close()
